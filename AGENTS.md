@@ -10,6 +10,7 @@ This document guides **coding agents and human maintainers working on this repos
 - [docs/adr/0001-canonical-core-and-skill-bundles.md](docs/adr/0001-canonical-core-and-skill-bundles.md): canonical Core and bundling
 - [docs/PROVENANCE.md](docs/PROVENANCE.md): preserved historical requirements and exclusions
 - [docs/PRIVACY-SECURITY-LICENSES.md](docs/PRIVACY-SECURITY-LICENSES.md): data boundary and license assumptions
+- [docs/SUBSCRIPTION-CAPACITY-PLANNING.md](docs/SUBSCRIPTION-CAPACITY-PLANNING.md): $20-subscription default, 90k-word planning model, quota-safe execution and benchmark acceptance criteria
 
 ## Source-of-truth rules
 
@@ -20,6 +21,14 @@ This document guides **coding agents and human maintainers working on this repos
 5. Do not add author/customer files, private reports, emails, API keys, `.env`, or historical proprietary assets to commits, test fixtures or releases.
 6. Do not claim that a provider subscription includes API credits, that every browser chat can install tools, that AI inference runs locally, or that KDP output is accepted.
 7. Before changing public feature claims, verify the actual code path and corresponding acceptance test. A passing packaging test does not imply acceptable editorial judgments.
+
+## Subscription-first engineering contract
+
+- The **default supported user journey** is ChatGPT Plus → Codex or Claude Pro → Claude Code. Authenticate with the user's existing subscription. No mandatory separately billed API key and no silent paid credits, resets, upgrades, or provider switching.
+- Plan manifests/chunks by **measured model-aware token counts**, not a universal words-to-tokens multiplier. Respect chapter/scene/paragraph boundaries and stable source identifiers; preserve legacy CLI behavior.
+- On a usage-limit warning or interruption, checkpoint safely and resume after available capacity returns. Distinguish a 3–6-chunk *work batch* from a provider's five-hour window; never infer a guaranteed number of books or session resets.
+- The 90k-word figures in the linked capacity planning document are **unmeasured hypotheses**. Treat provider session percentage and token counters as different metrics, and mark unavailable measurement fields unknown. A passing test of deterministic Python processing does not measure actual agent inference.
+- Keep literary translation and KDP/EPUB/DOCX production labelled BETA/unshipped until acceptance tests demonstrate full outputs and independent quality review.
 
 ## Reproducible checks
 
