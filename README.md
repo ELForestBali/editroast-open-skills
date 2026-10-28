@@ -69,6 +69,21 @@ python .agents/skills/manuscript-roast/scripts/manuscript_workflow.py status --w
 
 The status command reports completed, pending, and stale report files. The agent continues from the first pending chunk instead of starting over.
 
+## Durable manuscript projects (alpha)
+
+The ER-010/ER-011 project engine keeps original imports as immutable, SHA-256-verified revisions and stores extracted chapters, paragraphs, styles, source references, findings, and author decisions in project-local SQLite. From a source checkout:
+
+```bash
+python scripts/editroast.py project create ./my-book --title "My Book" --language en
+python scripts/editroast.py manuscript import ./my-book manuscript.docx
+python scripts/editroast.py manuscript status ./my-book
+python scripts/editroast.py manuscript revisions ./my-book
+python scripts/editroast.py manuscript show ./my-book r000001
+python scripts/editroast.py manuscript verify ./my-book
+```
+
+Inside an installed skill, use the same commands with `<skill>/scripts/editroast.py`. Developers can also set `PYTHONPATH=src` and run `python -m editroast_core`. See [durable manuscript state](docs/MANUSCRIPT-STATE.md) for the directory layout, schema, migration and paragraph-identity rules.
+
 ## Verifiable evidence
 
 Findings use stable chunk IDs and line ranges. The validator checks that:
@@ -119,6 +134,8 @@ The builder creates four individual archives, a complete pack, and `dist/SHA256S
 ## Known limitations
 
 - The workflow supports TXT, Markdown, and DOCX. It does not preserve DOCX tracked changes or layout.
+- Durable ingest preserves DOCX source bytes and mixed run/style metadata, but does not yet provide byte-perfect DOCX round-trip editing; auxiliary headers, footnotes, comments, media, and table geometry are reported as limitations.
+- Paragraph matching is intentionally conservative. Ambiguous repeated or changed fragments receive new IDs marked `ambiguous` for later reconciliation rather than being silently linked.
 - v1 produces Markdown reports. It does not silently rewrite the source manuscript.
 - A corrected DOCX is not generated in v1 because reliable round-trip editing and change verification vary too much across documents.
 - Translation and book production are BETA foundations only; branded translation-decision PDFs, full translation, DOCX/EPUB/PDF generation, and platform acceptance checks remain unsupported.

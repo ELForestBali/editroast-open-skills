@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 
-VERSION = "2.0.0-alpha.1"
+VERSION = "2.0.0-alpha.2"
 SKILLS = (
     "manuscript-roast",
     "manuscript-proofreading",
@@ -20,7 +20,7 @@ SKILLS = (
 )
 PACKS = {name: (name,) for name in SKILLS} | {"complete-pack": SKILLS}
 ROOT_FILES = ("README.md", "LICENSE", "CHANGELOG.md", "install.py")
-CORE_WRAPPERS = ("manuscript_workflow.py", "editroast_state.py")
+CORE_WRAPPERS = ("manuscript_workflow.py", "editroast_state.py", "editroast.py")
 FIXED_ZIP_TIME = (2026, 10, 28, 0, 0, 0)
 
 
@@ -112,7 +112,11 @@ def verify_archive(path: Path, expected_skills: tuple[str, ...]) -> None:
                     f"{base}/SKILL.md",
                     f"{base}/scripts/manuscript_workflow.py",
                     f"{base}/scripts/editroast_state.py",
+                    f"{base}/scripts/editroast.py",
                     f"{base}/scripts/editroast_core/__init__.py",
+                    f"{base}/scripts/editroast_core/__main__.py",
+                    f"{base}/scripts/editroast_core/cli.py",
+                    f"{base}/scripts/editroast_core/manuscript_state.py",
                     f"{base}/scripts/editroast_core/manuscript_workflow.py",
                     f"{base}/scripts/editroast_core/editroast_state.py",
                     f"{base}/templates/book-map.md",
