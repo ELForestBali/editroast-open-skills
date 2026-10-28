@@ -1,11 +1,18 @@
 ---
 name: manuscript-proofreading
 description: Proofread a complete book from TXT, Markdown, or DOCX across multiple chapters while preserving the author's voice. Use for spelling, grammar, punctuation, terminology, name, timeline, and formatting consistency checks, including books longer than one context window. Do not use for developmental critique or silent wholesale rewriting.
+license: MIT
+metadata:
+  author: EditRoast
+  version: "2.0.0-alpha.1"
+  status: "stable-v1-workflow"
 ---
 
 # Full Manuscript Proofreading
 
 Audit the entire manuscript for correctness and consistency while preserving its voice. Report proposed changes visibly. Do not silently alter the original.
+
+The bundled offline preparation and validation CLI requires Python 3.10 or newer.
 
 ## Before starting
 

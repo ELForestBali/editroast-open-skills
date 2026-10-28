@@ -1,5 +1,5 @@
 interface:
   display_name: "Full Manuscript Proofreading"
   short_description: "Proofread a complete book without flattening its voice"
-  default_prompt: "Proofread my complete manuscript and return an auditable correction report."
+  default_prompt: "Use $manuscript-proofreading to proofread my complete manuscript and return an auditable correction report."
 

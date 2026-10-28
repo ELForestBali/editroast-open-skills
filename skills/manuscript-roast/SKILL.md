@@ -1,11 +1,20 @@
 ---
 name: manuscript-roast
 description: Critique a complete fiction or narrative nonfiction manuscript from TXT, Markdown, or DOCX, including books longer than one context window. Use for full-book developmental feedback, plot and character analysis, chapter-by-chapter critique, continuity checks, or a prioritized revision plan. Do not use for proofreading-only requests or for silently rewriting the author's prose.
+license: MIT
+metadata:
+  author: EditRoast
+  version: "2.0.0-alpha.1"
+  status: "stable-v1-workflow"
 ---
 
 # Full Manuscript Roast
 
 Produce a candid, evidence-backed editorial diagnosis of the entire manuscript. Preserve the author's voice and agency: recommend revisions, but do not silently rewrite the book.
+
+The bundled offline preparation and validation CLI requires Python 3.10 or newer.
+
+Use the stable role IDs, historical display names, specialties, and report order in [references/editorial-personas.md](references/editorial-personas.md) when presenting the three editorial lenses and Editorial Board. These are virtual roles, not human editors.
 
 ## Before starting
 

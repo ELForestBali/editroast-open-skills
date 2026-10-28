@@ -4,6 +4,8 @@ An ordinary browser chat may read uploaded files, but it usually cannot run this
 
 Use this manual method when Codex or Claude Code is unavailable.
 
+Literary translation and book production are BETA planning foundations in PR-01. An ordinary chat cannot turn them into a verified full-book translation, corrected DOCX, EPUB, print PDF, or KDP-accepted file. Use the local installed path for decision records and deterministic checks, and keep those limitations explicit.
+
 ## Prepare the manuscript yourself
 
 1. Keep an untouched copy of the original.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Book Production (Beta)"
+  short_description: "Plan print and ebook production preflight"
+  default_prompt: "Use $book-production to prepare a production profile and preflight plan for my book."

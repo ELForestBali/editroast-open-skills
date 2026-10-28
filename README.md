@@ -1,19 +1,21 @@
 # EditRoast Open Skills
 
-Free, open-source agent skills for authors who want to critique or proofread an entire manuscript with their own AI workspace.
+Free, open-source agent skills for authors who want to critique, proofread, plan translation, or prepare production requirements for a manuscript in their own AI workspace.
 
-The pack contains two skills:
+The pack contains four independently installable skills:
 
 - **Full Manuscript Roast** builds a manuscript map, reviews every chapter in context, verifies quoted evidence, prioritizes problems, and produces an editorial revision plan.
 - **Full Manuscript Proofreading** checks the complete book chapter by chapter, separates objective corrections from optional style notes, maintains a consistency sheet, and produces an auditable correction report.
+- **Literary Translation (BETA)** inventories translation ambiguities, records explicit author decisions, and maintains the decision/glossary foundation. It is not yet an end-to-end translation engine.
+- **Book Production (BETA)** collects destination requirements and defines print/ebook preflight checks. It does not yet generate or certify upload-ready KDP/EPUB files.
 
-The skills are orchestration instructions and local workflow tools. They are not an AI model, a hosted editing service, or a promise that an arbitrary chat window can process an unlimited book in one message.
+The skills are orchestration instructions and offline local workflow tools. They are not an AI model, a hosted editing service, or a promise that an arbitrary chat window can process an unlimited book in one message. No live LLM call is implemented in this repository.
 
 ## Why they are free
 
 EditRoast publishes these tools so independent authors can run a careful, inspectable editing workflow on their own computer. There is no registration, email gate, or payment to download or use the pack.
 
-Your AI provider may still charge for a subscription or API usage, and every provider has its own context, file, message, and rate limits. The included Python workflow itself has no paid dependency and does not require an API key.
+Your AI provider may still charge for a subscription or API usage, and every provider has its own context, file, message, and rate limits. The included Python workflows use only the standard library, have no paid dependency, and do not require an API key.
 
 ## What stays local
 
@@ -27,7 +29,7 @@ Requirements: Python 3.10 or newer and either Codex or Claude Code. TXT, Markdow
 
 1. Download and unzip a release.
 2. Open a terminal in the extracted folder.
-3. Install one or both skills into a project:
+3. Install one or all skills into a project:
 
 ```bash
 python install.py --target codex --scope project --skill all --project-dir /path/to/your-book-project
@@ -88,6 +90,7 @@ Codex and Claude Code can use the account or provider configured in those produc
 ```text
 skills/       Agent Skills source
 scripts/      Shared local workflow and release builder
+src/          Single canonical editroast_core source module
 templates/    Book map and report templates
 examples/     Synthetic manuscript and example reports
 tests/        Workflow tests
@@ -95,11 +98,24 @@ docs/         Installation and manual-chat guides
 dist/         Versioned release ZIP files (generated)
 ```
 
+The `skills/` folders are concise source specifications. `scripts/build_release.py` deterministically vendors `src/editroast_core/`, compatibility entry points, and templates into each standalone artifact. Runtime copies inside built packages are generated, not maintained independently.
+
+## Build and verify
+
+```bash
+python scripts/build_release.py
+python scripts/security_check.py
+python -m unittest discover -s tests -v
+```
+
+The builder creates four individual archives, a complete pack, and `dist/SHA256SUMS.txt`. Tests rebuild in isolated temporary directories, compare hashes for determinism, install built artifacts into temporary Codex and Claude Code projects, and check required bundled dependencies.
+
 ## Known limitations
 
 - The workflow supports TXT, Markdown, and DOCX. It does not preserve DOCX tracked changes or layout.
 - v1 produces Markdown reports. It does not silently rewrite the source manuscript.
 - A corrected DOCX is not generated in v1 because reliable round-trip editing and change verification vary too much across documents.
+- Translation and book production are BETA foundations only; branded translation-decision PDFs, full translation, DOCX/EPUB/PDF generation, and platform acceptance checks remain unsupported.
 - The quality and language coverage of the editorial work depend on the selected model.
 - Ordinary browser chat products may not provide command execution, persistent files, or enough context for the automated workflow. Use the manual guide instead.
 
