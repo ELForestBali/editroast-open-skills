@@ -7,6 +7,7 @@ import json
 import sqlite3
 
 from .manuscript_state import ManuscriptProject
+from .board_synthesis import adjudicate_editorial_board
 from .editorial_board import (
     preview_editorial_board, start_editorial_lenses, editorial_lenses_status,
     claim_editorial_lens_unit, complete_editorial_lens_unit,
@@ -276,6 +277,11 @@ def build_parser() -> argparse.ArgumentParser:
     editorial_result.add_argument("project")
     editorial_result.add_argument("map_run_id")
     editorial_result.add_argument("review_id")
+    editorial_adjudicate = editorial_actions.add_parser("adjudicate")
+    editorial_adjudicate.add_argument("project")
+    editorial_adjudicate.add_argument("map_run_id")
+    editorial_adjudicate.add_argument("review_id")
+    editorial_adjudicate.add_argument("--decisions", required=True)
 
     bundle_group = groups.add_parser("bundle")
     bundle_actions = bundle_group.add_subparsers(dest="action", required=True)
@@ -326,6 +332,11 @@ def run(args: argparse.Namespace) -> int:
             elif args.group == "editorial" and args.action == "preview":
                 payload = preview_completed_editorial_lenses(
                     project, args.map_run_id, args.review_id,
+                )
+            elif args.group == "editorial" and args.action == "adjudicate":
+                payload = adjudicate_editorial_board(
+                    project, args.map_run_id, args.review_id,
+                    read_book_map(args.decisions),
                 )
             elif args.group == "book-map" and args.action == "inventory":
                 payload = inventory_book(project, args.revision, include_text=args.include_text)
@@ -502,7 +513,7 @@ def run(args: argparse.Namespace) -> int:
             else:
                 payload = project.verify()
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
-    verification = (args.action == "verify" and args.group in {"manuscript", "run"}) or (args.group == "book-map" and args.action == "validate") or (args.group == "editorial" and args.action == "board-preview")
+    verification = (args.action == "verify" and args.group in {"manuscript", "run"}) or (args.group == "book-map" and args.action == "validate") or (args.group == "editorial" and args.action in {"board-preview", "adjudicate"})
     return 2 if verification and not payload["ok"] else 0
 
 
