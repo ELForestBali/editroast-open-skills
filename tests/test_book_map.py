@@ -104,6 +104,43 @@ class BookMapTests(unittest.TestCase):
         book["records"] = [{"id": "1", "kind": [], "evidence": []}]
         self.assertFalse(validate_book_map(self.project, self.revision, book)["ok"])
 
+    def test_untrusted_json_enum_types_fail_validation_not_python_exception(self):
+        from editroast_core.book_map import _validate_records
+
+        inventory = inventory_book(self.project, self.revision, include_text=True)
+        chapter = inventory["chapters"][0]
+        paragraph = chapter["paragraphs"][1]
+        source = paragraph["text"]
+        good = {
+            "id": "safe", "kind": "event", "record_class": "observed_fact",
+            "epistemic_status": "observed", "scope": "chapter",
+            "narrative_frame": "literal", "statement": "Synthetic observation",
+            "review_status": "confirmed", "links": [],
+            "pov_type": "close_third",
+            "sequence": {"reading_order": 1, "chronology": "unknown", "story_time": None},
+            "evidence": [{
+                "revision_uid": self.revision,
+                "paragraph_stable_id": paragraph["stable_id"],
+                "exact_quote": source,
+            }],
+        }
+        for field in ("record_class", "epistemic_status", "review_status", "pov_type"):
+            with self.subTest(field=field):
+                malformed = json.loads(json.dumps(good))
+                malformed[field] = ["not", "a", "string"]
+                errors, _, _ = _validate_records(
+                    self.project, self.revision, [malformed],
+                    strict=True, expected_chapter_id=chapter["stable_id"], expected_pass="B",
+                )
+                self.assertTrue(errors, f"{field} must be rejected without an exception")
+        malformed = json.loads(json.dumps(good))
+        malformed["sequence"]["chronology"] = {"unexpected": "object"}
+        errors, _, _ = _validate_records(
+            self.project, self.revision, [malformed],
+            strict=True, expected_chapter_id=chapter["stable_id"], expected_pass="B",
+        )
+        self.assertTrue(errors, "non-string chronology must be rejected without an exception")
+
     def test_snapshot_tamper_is_rejected(self):
         book = inventory_book(self.project, self.revision)
         snapshot = Path(self.project.revision(self.revision)["snapshot"])
