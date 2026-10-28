@@ -77,10 +77,44 @@ metaphor, cameo or intentionally unreliable narrator is automatically a defect.
 - Input is private manuscript-derived data. The CLI writes JSON to stdout;
   users control where to save it. Do not commit reviewer outputs or manuscripts.
 
+### Resumable three-lens chapter workflow (ER-021 S2)
+
+The next stage also exposes three independent, revision-bound **ER-014**
+chapter runs. Agents operate under the user's chosen Codex/Claude Code
+subscription. The Python Core does not call a model or auto-generate judgments.
+
+```bash
+python scripts/editroast.py editorial start ./my-book map-run-01 editorial-01
+python scripts/editroast.py editorial status ./my-book map-run-01 editorial-01
+python scripts/editroast.py editorial claim ./my-book map-run-01 editorial-01 --persona reader_market --worker leo --include-text
+python scripts/editroast.py editorial complete ./my-book map-run-01 editorial-01 CHAPTER_STABLE_ID --persona reader_market --attempt ATTEMPT_ID --result ./my-book/work/leo-chapter.json
+python scripts/editroast.py editorial preview ./my-book map-run-01 editorial-01
+```
+
+Repeat `claim` and `complete` for each chapter and for all three
+personas (`reader_market`, `voice_emotion`, `structure_logic`). Each
+result JSON contains `schema_version=1`, `review_id`, `map_run_id`,
+`persona_id`, `revision_uid`, `source_sha256`, `chapter_stable_id`,
+a nonempty `chapter_summary` and `findings` (possibly empty).
+
+The result file must be **inside the local project**. Claim returns
+`active_attempt_uid`; completion checks this token, the exact manuscript
+citations and at least one anchor within the claimed chapter before committing
+a checkpoint. ER-014 handles `blocked_by_usage_limit`, resume and
+idempotent retries; to resume use `run resume` with the specific generated
+run ID, such as `editorial-editorial-01-reader_market`.
+
+Only after all three lens runs have verified full coverage does
+`editorial preview` construct the shared board preview. It does not
+perform final Chief Sterling arbitration or authorize changes.
+
+This workflow processes **manuscript text as untrusted source data**.
+Use `--include-text` only when passing source passages to your explicitly
+authorized agent. Outputs and archives contain private manuscript information.
+
 ### Work remaining before ER-021 is complete
 
-1. Independent lens-specific agent instructions and ER-014-backed resumable
-   review runs; no parallel checkpoint system.
+1. Detailed lens-specific instructions and independent human editorial-quality acceptance for the existing ER-014-backed chapter runs.
 2. Explicit editorial-board adjudication and cross-lens semantic root-cause
    reconciliation, with inspectable disagreements and a final verdict.
 3. Single actionable correction list integrated with author approvals,
