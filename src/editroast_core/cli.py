@@ -7,6 +7,11 @@ import json
 import sqlite3
 
 from .manuscript_state import ManuscriptProject
+from .project_bundle import (
+    export_project_bundle,
+    import_project_bundle,
+    inspect_project_bundle,
+)
 
 
 def _metadata(parser: argparse.ArgumentParser) -> None:
@@ -169,11 +174,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_checkpoint.add_argument("--reason")
     run_checkpoint.add_argument("--actor", default="agent")
+
+    bundle_group = groups.add_parser("bundle")
+    bundle_actions = bundle_group.add_subparsers(dest="action", required=True)
+    bundle_export = bundle_actions.add_parser("export")
+    bundle_export.add_argument("project")
+    bundle_export.add_argument("output")
+    bundle_inspect = bundle_actions.add_parser("inspect")
+    bundle_inspect.add_argument("bundle")
+    bundle_import = bundle_actions.add_parser("import")
+    bundle_import.add_argument("bundle")
+    bundle_import.add_argument("destination")
     return parser
 
 
 def run(args: argparse.Namespace) -> int:
-    if args.group == "project" and args.action == "create":
+    if args.group == "bundle" and args.action == "inspect":
+        payload = inspect_project_bundle(args.bundle)
+    elif args.group == "bundle" and args.action == "import":
+        payload = import_project_bundle(args.bundle, args.destination)
+    elif args.group == "bundle" and args.action == "export":
+        with ManuscriptProject.open(args.project) as project:
+            payload = export_project_bundle(project, args.output)
+    elif args.group == "project" and args.action == "create":
         with ManuscriptProject.create(
             args.path, title=args.title, author=args.author, language=args.language
         ) as project:

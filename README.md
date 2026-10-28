@@ -89,9 +89,24 @@ python scripts/editroast.py run verify ./my-book roast-2026-10-28
 
 `run complete` requires the claimed unit ID, its exact attempt token, and a result file inside the project. Coverage reaches 100% only while every recorded result still exists and matches its SHA-256. This engine stores orchestration state; it does not call a model or claim that an editorial judgment is correct.
 
-## Durable manuscript projects, revision diff, safe apply, and resumable runs (alpha)
+## Move or recover a durable project
 
-The ER-010 through ER-014 project engine keeps original imports as immutable, SHA-256-verified revisions and stores extracted structure, findings, decisions, structural diffs, reconciliation, correction approvals, apply history, and run checkpoints in project-local SQLite. From a source checkout:
+ER-015 exports a durable project as one `.editroast` archive and restores it into a new, non-existing directory. The bundle carries the canonical database, immutable revision snapshots, approvals, findings, application history, and completed run results referenced by the database:
+
+```bash
+python scripts/editroast.py bundle export ./my-book ./backups/my-book.editroast
+python scripts/editroast.py bundle inspect ./backups/my-book.editroast
+python scripts/editroast.py bundle import ./backups/my-book.editroast ./restored-my-book
+python scripts/editroast.py manuscript verify ./restored-my-book
+```
+
+Export refuses corrupt snapshots or completed run results. Import validates every declared path, size, and SHA-256 before extracting, rejects unsupported future formats, and atomically creates a new project without overwriting an existing directory. Service metadata is sanitized for credential-like values and absolute user paths; SQLite WAL/SHM files, staging files, and unreferenced work files are excluded.
+
+The immutable manuscript snapshots are intentionally included byte-for-byte so revision hashes and safe-apply history remain valid. A `.editroast` file is therefore a **private manuscript backup**, not an anonymized or public-safe artifact. Export refuses detected credential-like strings or private absolute paths anywhere in the final payload instead of silently changing manuscript bytes.
+
+## Durable manuscript projects, revision diff, safe apply, resumable runs, and recovery (alpha)
+
+The ER-010 through ER-015 project engine keeps original imports as immutable, SHA-256-verified revisions and stores extracted structure, findings, decisions, structural diffs, reconciliation, correction approvals, apply history, and run checkpoints in project-local SQLite. From a source checkout:
 
 ```bash
 python scripts/editroast.py project create ./my-book --title "My Book" --language en

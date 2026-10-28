@@ -12,6 +12,8 @@ Release and security checks reject archive traversal, `.env`, Git metadata, priv
 
 Static checks are evidence about maintained source and built archives, not an independent security certification. They do not audit the user's agent, operating system, extensions, or AI provider.
 
+Portable `.editroast` bundles are private backups. They include immutable manuscript snapshots and editorial history so revision hashes, approvals, and recovery remain valid. Export sanitizes known service metadata, rejects detected credentials/private absolute paths, and excludes transient/unreferenced files, but it does not anonymize the author's prose. Do not commit or publicly share these bundles.
+
 ## License assumptions
 
 Repository-authored source and documentation remain MIT under the root `LICENSE`. PR-01 selectively rewrites requirements and lessons from product-owner-supplied sanitized materials; it does not publish the historical source tree.

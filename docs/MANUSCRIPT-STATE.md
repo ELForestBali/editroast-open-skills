@@ -1,6 +1,6 @@
 # Durable manuscript state and ingestion
 
-This document describes the ER-010 through ER-014 implementation in `src/editroast_core/manuscript_state.py`, `revision_diff.py`, and `safe_apply.py`. It is local, standard-library-only code. Manuscript text is always untrusted data and never authorizes command execution, uploads, network access, or other external actions.
+This document describes the ER-010 through ER-015 implementation in `src/editroast_core/manuscript_state.py`, `revision_diff.py`, `safe_apply.py`, and `project_bundle.py`. It is local, standard-library-only code. Manuscript text is always untrusted data and never authorizes command execution, uploads, network access, or other external actions.
 
 ## Project directory
 
@@ -104,6 +104,18 @@ Checkpoints distinguish `paused`, `blocked_by_usage_limit`, and `needs_author_de
 
 This is local orchestration and integrity state. It does not make live model calls, infer provider quota, purchase credits, or verify the quality of an editorial report.
 
+## Portable project bundles
+
+ER-015 writes one `.editroast` ZIP container with a format-versioned `manifest.json`, a checkpointed canonical SQLite backup, a generated portable `project.json`, every immutable revision snapshot, and completed run results referenced by `run_units`. SQLite WAL/SHM files, `.staging`, orphaned snapshots, and unreferenced `work/` or `reports/` files are excluded.
+
+Before export, revision/database integrity and completed-result hashes must pass. Known service JSON fields redact credential values and absolute local paths, the SQLite copy is vacuumed, and every final payload is scanned for credential-like patterns and private absolute paths. Manuscript snapshots are not rewritten because that would invalidate revision hashes; a detected secret/path in immutable content blocks export with an error.
+
+The manifest records project/schema/format versions, revision/finding/decision/application/run IDs, and each member's exact size and SHA-256. Inspection and import reject duplicate names, traversal, backslashes, drive-prefixed paths, symlinks, encrypted members, archive bombs, unlisted files, altered hashes, unsupported future versions, and detected credential/private-path payloads.
+
+Import extracts only declared members into a same-volume staging directory, opens and verifies the recovered project, confirms all manifest identity lists, then atomically renames it to a new destination. Existing files or directories are never overwritten. Incomplete runs remain incomplete and resumable; only corrupt recorded completions block recovery.
+
+The archive contains the author's original manuscript bytes and editorial history. It is a private backup/transfer artifact, not anonymized data and not suitable for a public repository.
+
 ## Ingestion and completeness
 
 TXT and Markdown preserve every physical paragraph line, including empty lines. Markdown headings retain their level. Input is decoded as UTF-8 with BOM support, UTF-16, or Windows-1252 with a warning for the fallback encoding.
@@ -149,6 +161,9 @@ python scripts/editroast.py run checkpoint ./my-book roast-01 --status blocked_b
 python scripts/editroast.py run resume ./my-book roast-01
 python scripts/editroast.py run verify ./my-book roast-01
 python scripts/editroast.py run history ./my-book roast-01
+python scripts/editroast.py bundle export ./my-book ./backups/my-book.editroast
+python scripts/editroast.py bundle inspect ./backups/my-book.editroast
+python scripts/editroast.py bundle import ./backups/my-book.editroast ./restored-my-book
 python scripts/editroast.py manuscript verify ./my-book
 ```
 
