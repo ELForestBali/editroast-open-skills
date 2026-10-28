@@ -17,6 +17,14 @@ EditRoast publishes these tools so independent authors can run a careful, inspec
 
 Your AI provider may still charge for a subscription or API usage, and every provider has its own context, file, message, and rate limits. The included Python workflows use only the standard library, have no paid dependency, and do not require an API key.
 
+## Subscription-first usage planning (ChatGPT Plus and Claude Pro)
+
+The primary supported agent path is **Codex signed in with ChatGPT Plus** or **Claude Code signed in with Claude Pro** (each advertised at US **$20/month**). The open-source skills themselves are free. **An API key is not required** when using an eligible agent subscription, but the plan does **not** include unlimited model use or a guaranteed number of books per billing period. Long manuscripts may require multiple sessions and waiting for five-hour or weekly usage limits to reset. Do not turn on optional pay-as-you-go credits or API billing as an automatic fallback.
+
+For planning only, a 90,000-word English manuscript is roughly 120k–140k source tokens. A **hypothetical four-stage** roast → proofreading → literary translation → book production workflow was estimated at **~1.28M–2.17M total model input/output tokens**. **This is not benchmarked, not a subscription-token quota, and not the usage of any shipping end-to-end pipeline.** Roast and proofreading workflows exist; full literary translation and publish-ready book production remain BETA/roadmap.
+
+See the [90k-word subscription capacity model, multilingual chunking assumptions and measurement plan](docs/SUBSCRIPTION-CAPACITY-PLANNING.md). Always report actual provider limits and observed usage separately from estimates.
+
 ## What stays local
 
 The preparation, chapter splitting, progress state, evidence ledger, and validation steps run locally. Your manuscript is not uploaded to EditRoast.
