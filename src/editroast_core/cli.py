@@ -124,6 +124,51 @@ def build_parser() -> argparse.ArgumentParser:
     rollback.add_argument("--plan-hash", required=True)
     rollback.add_argument("--actor", default="author")
     rollback.add_argument("--confirm-author-approval", action="store_true")
+
+    run_group = groups.add_parser("run")
+    run_actions = run_group.add_subparsers(dest="action", required=True)
+    run_create = run_actions.add_parser("create")
+    run_create.add_argument("project")
+    run_create.add_argument("run_id")
+    run_create.add_argument("revision")
+    run_create.add_argument("--type", dest="run_type", required=True)
+    run_create.add_argument("--scope", choices=("chapter", "paragraph"), default="chapter")
+    run_create.add_argument("--actor", default="agent")
+    for action in ("status", "resume", "verify", "history"):
+        command = run_actions.add_parser(action)
+        command.add_argument("project")
+        command.add_argument("run_id")
+        if action == "resume":
+            command.add_argument("--actor", default="agent")
+    run_claim = run_actions.add_parser("claim")
+    run_claim.add_argument("project")
+    run_claim.add_argument("run_id")
+    run_claim.add_argument("--worker", required=True)
+    run_claim.add_argument("--actor", default="agent")
+    run_complete = run_actions.add_parser("complete")
+    run_complete.add_argument("project")
+    run_complete.add_argument("run_id")
+    run_complete.add_argument("unit_id")
+    run_complete.add_argument("--attempt", required=True)
+    run_complete.add_argument("--result", required=True)
+    run_complete.add_argument("--actor", default="agent")
+    run_fail = run_actions.add_parser("fail")
+    run_fail.add_argument("project")
+    run_fail.add_argument("run_id")
+    run_fail.add_argument("unit_id")
+    run_fail.add_argument("--attempt", required=True)
+    run_fail.add_argument("--error", required=True)
+    run_fail.add_argument("--actor", default="agent")
+    run_checkpoint = run_actions.add_parser("checkpoint")
+    run_checkpoint.add_argument("project")
+    run_checkpoint.add_argument("run_id")
+    run_checkpoint.add_argument(
+        "--status",
+        required=True,
+        choices=("paused", "blocked_by_usage_limit", "needs_author_decision"),
+    )
+    run_checkpoint.add_argument("--reason")
+    run_checkpoint.add_argument("--actor", default="agent")
     return parser
 
 
@@ -135,7 +180,47 @@ def run(args: argparse.Namespace) -> int:
             payload = project.status()
     else:
         with ManuscriptProject.open(args.project) as project:
-            if args.action == "import":
+            if args.group == "run" and args.action == "create":
+                payload = project.create_run(
+                    args.run_id,
+                    args.revision,
+                    run_type=args.run_type,
+                    scope=args.scope,
+                    actor=args.actor,
+                )
+            elif args.group == "run" and args.action == "status":
+                payload = project.run_status(args.run_id)
+            elif args.group == "run" and args.action == "claim":
+                payload = project.claim_run_unit(
+                    args.run_id, worker_id=args.worker, actor=args.actor
+                )
+            elif args.group == "run" and args.action == "complete":
+                payload = project.complete_run_unit(
+                    args.run_id,
+                    args.unit_id,
+                    attempt_uid=args.attempt,
+                    result=args.result,
+                    actor=args.actor,
+                )
+            elif args.group == "run" and args.action == "fail":
+                payload = project.fail_run_unit(
+                    args.run_id,
+                    args.unit_id,
+                    attempt_uid=args.attempt,
+                    error=args.error,
+                    actor=args.actor,
+                )
+            elif args.group == "run" and args.action == "checkpoint":
+                payload = project.checkpoint_run(
+                    args.run_id, args.status, actor=args.actor, reason=args.reason
+                )
+            elif args.group == "run" and args.action == "resume":
+                payload = project.resume_run(args.run_id, actor=args.actor)
+            elif args.group == "run" and args.action == "verify":
+                payload = project.verify_run(args.run_id)
+            elif args.group == "run" and args.action == "history":
+                payload = project.run_history(args.run_id)
+            elif args.action == "import":
                 payload = project.import_manuscript(
                     args.source, title=args.title, author=args.author, language=args.language
                 )
@@ -228,7 +313,8 @@ def run(args: argparse.Namespace) -> int:
             else:
                 payload = project.verify()
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
-    return 2 if args.group == "manuscript" and args.action == "verify" and not payload["ok"] else 0
+    verification = args.action == "verify" and args.group in {"manuscript", "run"}
+    return 2 if verification and not payload["ok"] else 0
 
 
 def main() -> int:

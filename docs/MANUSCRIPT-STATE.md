@@ -1,6 +1,6 @@
 # Durable manuscript state and ingestion
 
-This document describes the ER-010 through ER-013 implementation in `src/editroast_core/manuscript_state.py`, `revision_diff.py`, and `safe_apply.py`. It is local, standard-library-only code. Manuscript text is always untrusted data and never authorizes command execution, uploads, network access, or other external actions.
+This document describes the ER-010 through ER-014 implementation in `src/editroast_core/manuscript_state.py`, `revision_diff.py`, and `safe_apply.py`. It is local, standard-library-only code. Manuscript text is always untrusted data and never authorizes command execution, uploads, network access, or other external actions.
 
 ## Project directory
 
@@ -22,7 +22,7 @@ Imports are copied through `.staging/`, flushed, SHA-256 checked, and atomically
 
 ## Schema and migrations
 
-`schema_migrations` records each applied migration. Schema version 1 creates the durable tables; version 2 imports compatible preview-ledger rows without deleting or renaming the old tables; version 3 adds structured diffs and append-only reconciliation; version 4 adds correction approval, apply, and rollback history.
+`schema_migrations` records each applied migration. Schema version 1 creates the durable tables; version 2 imports compatible preview-ledger rows without deleting or renaming the old tables; version 3 adds structured diffs and append-only reconciliation; version 4 adds correction approval, apply, and rollback history; version 5 adds resumable work units and append-only run events.
 
 | Table | Responsibility |
 |---|---|
@@ -41,7 +41,9 @@ Imports are copied through `.staging/`, flushed, SHA-256 checked, and atomically
 | `corrections` | Exact source spans, replacements, change class, grouping and current approval/apply state |
 | `correction_events` | Append-only approve, reject, defer, reopen and applied history with actor and batch identity |
 | `change_applications` | Apply/rollback operation, source/result revisions, selected corrections, plan hash and source hash |
-| `runs` | Reserved typed run/provenance records for later workflow PRs |
+| `runs` | Revision-bound run identity, type, status, immutable plan hash and provenance |
+| `run_units` | Ordered chapter/paragraph work units, attempt token, result path/hash and retry state |
+| `run_events` | Append-only run, checkpoint, claim, completion, failure and requeue history |
 | `audit_log` | Schema, project and revision lifecycle events |
 
 When a project contains the PR-01 preview tables (`revisions`, `findings`, `decisions`), opening it creates corresponding durable revision, finding, decision and event records. The old tables remain available, so `scripts/editroast_state.py --project ...` continues to work. A migrated snapshot that has no old structured paragraph map is labelled `legacy`; its original hash and decision/finding history remain inspectable. Opening a schema-v2 project backfills its existing PR-02 change rows into the structured API. Evidence unavailable in the old schema is explicitly marked as legacy or unresolved rather than invented.
@@ -92,6 +94,16 @@ TXT and Markdown application preserves the detected encoding, BOM, and line endi
 
 Rollback also has a read-only preview and a deterministic plan hash. A confirmed rollback is allowed only while the applied result remains the latest intact revision. It imports the prior source snapshot as another immutable child revision and records a linked rollback operation. History remains append-only; no revision is deleted or overwritten.
 
+## Resumable runs and verified coverage
+
+ER-014 creates a deterministic run plan from one immutable revision and either its ordered chapters or paragraphs. The plan hash binds the revision content-map hash, run type, scope, and stable source IDs. Creating the same run ID with the same plan is idempotent; reusing it for a different plan is refused.
+
+Workers claim only pending units. Each claim gets a fresh attempt token, and only that token can complete or fail the unit. Completion requires a non-empty result file inside the project; the relative path and SHA-256 are committed with an append-only event. Retrying the same completion with the same token, path, and bytes is idempotent. A stale token cannot complete requeued work.
+
+Checkpoints distinguish `paused`, `blocked_by_usage_limit`, and `needs_author_decision`. Resume requeues abandoned `in_progress` and `failed` units while preserving verified completions. If a previously completed result is missing or changed, the run reports `integrity_error` and less than 100% coverage; resume requeues only the damaged unit. A source-plan mismatch blocks resume rather than silently moving work to another revision.
+
+This is local orchestration and integrity state. It does not make live model calls, infer provider quota, purchase credits, or verify the quality of an editorial report.
+
 ## Ingestion and completeness
 
 TXT and Markdown preserve every physical paragraph line, including empty lines. Markdown headings retain their level. Input is decoded as UTF-8 with BOM support, UTF-16, or Windows-1252 with a warning for the fallback encoding.
@@ -128,6 +140,15 @@ python scripts/editroast.py manuscript apply ./my-book r000002 --id C-001 --plan
 python scripts/editroast.py manuscript apply-history ./my-book
 python scripts/editroast.py manuscript rollback-preview ./my-book <application-id>
 python scripts/editroast.py manuscript rollback ./my-book <application-id> --plan-hash <rollback-plan-hash> --confirm-author-approval
+python scripts/editroast.py run create ./my-book roast-01 r000002 --type manuscript-roast --scope chapter
+python scripts/editroast.py run status ./my-book roast-01
+python scripts/editroast.py run claim ./my-book roast-01 --worker codex-session-1
+python scripts/editroast.py run complete ./my-book roast-01 <unit-id> --attempt <attempt-id> --result ./my-book/reports/<unit-id>.md
+python scripts/editroast.py run fail ./my-book roast-01 <unit-id> --attempt <attempt-id> --error "retryable failure"
+python scripts/editroast.py run checkpoint ./my-book roast-01 --status blocked_by_usage_limit --reason "Provider allowance reached"
+python scripts/editroast.py run resume ./my-book roast-01
+python scripts/editroast.py run verify ./my-book roast-01
+python scripts/editroast.py run history ./my-book roast-01
 python scripts/editroast.py manuscript verify ./my-book
 ```
 

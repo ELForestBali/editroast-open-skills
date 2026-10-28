@@ -24,7 +24,7 @@ from .revision_diff import confidence_label, plan_chapter_diff, plan_paragraph_d
 from .safe_apply import renderability_errors, render_staged_revision
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SUPPORTED_SUFFIXES = {".docx", ".txt", ".md", ".markdown"}
 MAX_ARCHIVE_MEMBERS = 5_000
 MAX_ARCHIVE_UNCOMPRESSED = 256 * 1024 * 1024
@@ -612,6 +612,43 @@ CREATE INDEX IF NOT EXISTS idx_correction_events_id ON correction_events(correct
 CREATE INDEX IF NOT EXISTS idx_applications_source ON change_applications(source_revision_uid,created_at);
 """
 
+MIGRATION_5 = """
+CREATE TABLE IF NOT EXISTS run_units(
+    id INTEGER PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    unit_id TEXT NOT NULL,
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('chapter','paragraph')),
+    source_stable_id TEXT NOT NULL,
+    source_order INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','in_progress','completed','failed')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    active_attempt_uid TEXT,
+    worker_id TEXT,
+    result_path TEXT,
+    result_sha256 TEXT,
+    error TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE(run_id,unit_id)
+);
+CREATE TABLE IF NOT EXISTS run_events(
+    sequence INTEGER PRIMARY KEY,
+    event_uid TEXT NOT NULL UNIQUE,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    unit_id TEXT,
+    event_type TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT,
+    attempt_uid TEXT,
+    actor TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_units_status ON run_units(run_id,status,source_order);
+CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id,sequence);
+"""
+
 
 def _table_columns(connection: sqlite3.Connection, name: str) -> set[str]:
     return {row[1] for row in connection.execute(f'PRAGMA table_info("{name}")')}
@@ -664,12 +701,27 @@ def _apply_migrations(connection: sqlite3.Connection, root: Path) -> None:
     ).fetchone()
     if migrated_apply:
         connection.executescript(MIGRATION_4)
+    else:
+        connection.executescript("BEGIN;\n" + MIGRATION_4)
+        try:
+            connection.execute(
+                "INSERT INTO schema_migrations(version,name,applied_at) VALUES(4,?,?)",
+                ("author-approved safe correction application", utc_now()),
+            )
+        except Exception:
+            connection.rollback()
+            raise
+    migrated_runs = connection.execute(
+        "SELECT 1 FROM schema_migrations WHERE version=5"
+    ).fetchone()
+    if migrated_runs:
+        connection.executescript(MIGRATION_5)
         return
-    connection.executescript("BEGIN;\n" + MIGRATION_4)
+    connection.executescript("BEGIN;\n" + MIGRATION_5)
     try:
         connection.execute(
-            "INSERT INTO schema_migrations(version,name,applied_at) VALUES(4,?,?)",
-            ("author-approved safe correction application", utc_now()),
+            "INSERT INTO schema_migrations(version,name,applied_at) VALUES(5,?,?)",
+            ("resumable run checkpoints and coverage", utc_now()),
         )
     except Exception:
         connection.rollback()
@@ -2087,6 +2139,458 @@ class ManuscriptProject:
             history.append(item)
         return history
 
+    def _run_row(self, run_id: str) -> sqlite3.Row:
+        row = self.connection.execute(
+            "SELECT * FROM runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Unknown run: {run_id}")
+        return row
+
+    def _record_run_event(
+        self,
+        run_id: str,
+        event_type: str,
+        *,
+        actor: str,
+        unit_id: str | None = None,
+        from_status: str | None = None,
+        to_status: str | None = None,
+        attempt_uid: str | None = None,
+        payload: dict | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        self.connection.execute(
+            """INSERT INTO run_events(
+                event_uid,run_id,unit_id,event_type,from_status,to_status,attempt_uid,
+                actor,payload_json,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                stable_id("re"), run_id, unit_id, event_type, from_status, to_status,
+                attempt_uid, actor, json.dumps(payload or {}, ensure_ascii=False, sort_keys=True),
+                created_at or utc_now(),
+            ),
+        )
+
+    def create_run(
+        self,
+        run_id: str,
+        revision_uid: str,
+        *,
+        run_type: str,
+        scope: str = "chapter",
+        actor: str = "agent",
+        provenance: dict | None = None,
+    ) -> dict:
+        if not run_id.strip():
+            raise ValueError("Run ID is required")
+        if not run_type.strip():
+            raise ValueError("Run type is required")
+        if scope not in {"chapter", "paragraph"}:
+            raise ValueError("Run scope must be chapter or paragraph")
+        if not actor.strip():
+            raise ValueError("Run actor is required")
+        revision = self.connection.execute(
+            "SELECT * FROM manuscript_revisions WHERE revision_uid=?", (revision_uid,)
+        ).fetchone()
+        if not revision:
+            raise ValueError(f"Unknown revision: {revision_uid}")
+        table = "chapters" if scope == "chapter" else "paragraphs"
+        source_rows = self.connection.execute(
+            f"SELECT stable_id,source_order FROM {table} WHERE revision_uid=? ORDER BY source_order",
+            (revision_uid,),
+        ).fetchall()
+        if not source_rows:
+            raise ValueError(f"Revision {revision_uid} has no {scope} units")
+        units = [
+            {
+                "unit_id": row["stable_id"],
+                "source_stable_id": row["stable_id"],
+                "source_order": row["source_order"],
+            }
+            for row in source_rows
+        ]
+        canonical_plan = {
+            "revision_uid": revision_uid,
+            "content_map_hash": revision["content_map_hash"],
+            "run_type": run_type,
+            "scope": scope,
+            "units": units,
+        }
+        plan_hash = sha256_bytes(
+            json.dumps(
+                canonical_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        )
+        existing = self.connection.execute(
+            "SELECT * FROM runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if existing:
+            existing_provenance = json.loads(existing["provenance_json"])
+            if existing_provenance.get("plan_hash") != plan_hash:
+                raise ValueError(f"Run {run_id} already exists with a different plan")
+            payload = self.run_status(run_id)
+            payload["idempotent"] = True
+            return payload
+        now = utc_now()
+        stored_provenance = {
+            **(provenance or {}),
+            "scope": scope,
+            "plan_hash": plan_hash,
+            "source_content_map_hash": revision["content_map_hash"],
+        }
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO runs(
+                    run_id,revision_uid,run_type,status,provenance_json,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    run_id, revision_uid, run_type, "pending",
+                    json.dumps(stored_provenance, ensure_ascii=False, sort_keys=True), now, now,
+                ),
+            )
+            for unit in units:
+                self.connection.execute(
+                    """INSERT INTO run_units(
+                        run_id,unit_id,source_kind,source_stable_id,source_order,status,updated_at
+                    ) VALUES(?,?,?,?,?,'pending',?)""",
+                    (
+                        run_id, unit["unit_id"], scope, unit["source_stable_id"],
+                        unit["source_order"], now,
+                    ),
+                )
+            self._record_run_event(
+                run_id, "run.created", actor=actor, to_status="pending",
+                payload={"plan_hash": plan_hash, "scope": scope, "unit_count": len(units)},
+                created_at=now,
+            )
+        return self.run_status(run_id)
+
+    def _verified_run_units(self, run_id: str) -> tuple[set[str], list[dict]]:
+        verified: set[str] = set()
+        issues: list[dict] = []
+        for row in self.connection.execute(
+            "SELECT * FROM run_units WHERE run_id=? ORDER BY source_order,unit_id", (run_id,)
+        ):
+            if row["status"] != "completed":
+                continue
+            if not row["result_path"] or not row["result_sha256"]:
+                issues.append({
+                    "unit_id": row["unit_id"],
+                    "code": "result_metadata_missing",
+                    "message": "Completed unit has no result path or SHA-256",
+                })
+                continue
+            relative = _safe_project_relative(row["result_path"])
+            if relative is None:
+                issues.append({
+                    "unit_id": row["unit_id"],
+                    "code": "unsafe_result_path",
+                    "message": "Result path is not project-relative",
+                })
+                continue
+            path = self.root / relative
+            if not path.is_file():
+                issues.append({
+                    "unit_id": row["unit_id"],
+                    "code": "result_missing",
+                    "message": f"Result file is missing: {row['result_path']}",
+                })
+                continue
+            if sha256_file(path) != row["result_sha256"]:
+                issues.append({
+                    "unit_id": row["unit_id"],
+                    "code": "result_hash_mismatch",
+                    "message": f"Result file changed: {row['result_path']}",
+                })
+                continue
+            verified.add(row["unit_id"])
+        return verified, issues
+
+    def run_status(self, run_id: str) -> dict:
+        run = self._run_row(run_id)
+        units = [
+            dict(row) for row in self.connection.execute(
+                "SELECT * FROM run_units WHERE run_id=? ORDER BY source_order,unit_id", (run_id,)
+            )
+        ]
+        if not units:
+            raise ValueError(f"Run {run_id} has no resumable unit plan")
+        verified, issues = self._verified_run_units(run_id)
+        plan = json.loads(run["provenance_json"])
+        revision = self.connection.execute(
+            "SELECT content_map_hash FROM manuscript_revisions WHERE revision_uid=?",
+            (run["revision_uid"],),
+        ).fetchone()
+        if not revision or revision[0] != plan.get("source_content_map_hash"):
+            issues.append({
+                "unit_id": None,
+                "code": "source_plan_mismatch",
+                "message": "Run source revision no longer matches its immutable plan",
+            })
+        counts = {status: 0 for status in ("pending", "in_progress", "completed", "failed")}
+        for unit in units:
+            counts[unit["status"]] += 1
+            unit["verified"] = unit["unit_id"] in verified
+        ready = len(verified) == len(units) and not issues
+        effective_status = "completed" if ready else run["status"]
+        if run["status"] == "completed" and not ready:
+            effective_status = "integrity_error"
+        return {
+            "run_id": run_id,
+            "revision_uid": run["revision_uid"],
+            "run_type": run["run_type"],
+            "status": run["status"],
+            "effective_status": effective_status,
+            "plan": plan,
+            "unit_count": len(units),
+            "counts": counts,
+            "verified_completed": len(verified),
+            "progress_percent": round(len(verified) * 100 / len(units), 2),
+            "coverage_complete": ready,
+            "issues": issues,
+            "units": units,
+            "created_at": run["created_at"],
+            "updated_at": run["updated_at"],
+        }
+
+    def claim_run_unit(self, run_id: str, *, worker_id: str, actor: str = "agent") -> dict:
+        if not worker_id.strip():
+            raise ValueError("Worker ID is required")
+        run = self._run_row(run_id)
+        if run["status"] in {"paused", "blocked_by_usage_limit", "needs_author_decision"}:
+            raise ValueError(f"Run {run_id} is {run['status']}; resume it before claiming work")
+        if run["status"] == "completed":
+            return {"run_id": run_id, "next_unit": None, "coverage": self.run_status(run_id)}
+        unit = self.connection.execute(
+            """SELECT * FROM run_units
+               WHERE run_id=? AND status='pending' ORDER BY source_order,unit_id LIMIT 1""",
+            (run_id,),
+        ).fetchone()
+        if not unit:
+            return {"run_id": run_id, "next_unit": None, "coverage": self.run_status(run_id)}
+        now = utc_now()
+        attempt_uid = stable_id("attempt")
+        with self.connection:
+            updated = self.connection.execute(
+                """UPDATE run_units SET status='in_progress',attempt_count=attempt_count+1,
+                   active_attempt_uid=?,worker_id=?,error=NULL,started_at=?,completed_at=NULL,updated_at=?
+                   WHERE id=? AND status='pending'""",
+                (attempt_uid, worker_id, now, now, unit["id"]),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("Run unit was claimed concurrently; request the next unit again")
+            self.connection.execute(
+                "UPDATE runs SET status='running',updated_at=? WHERE run_id=?",
+                (now, run_id),
+            )
+            self._record_run_event(
+                run_id, "unit.started", actor=actor, unit_id=unit["unit_id"],
+                from_status="pending", to_status="in_progress", attempt_uid=attempt_uid,
+                payload={"worker_id": worker_id}, created_at=now,
+            )
+        claimed = dict(self.connection.execute(
+            "SELECT * FROM run_units WHERE id=?", (unit["id"],)
+        ).fetchone())
+        return {"run_id": run_id, "next_unit": claimed}
+
+    def complete_run_unit(
+        self,
+        run_id: str,
+        unit_id: str,
+        *,
+        attempt_uid: str,
+        result: str | Path,
+        actor: str = "agent",
+    ) -> dict:
+        unit = self.connection.execute(
+            "SELECT * FROM run_units WHERE run_id=? AND unit_id=?", (run_id, unit_id)
+        ).fetchone()
+        if not unit:
+            raise ValueError(f"Unknown unit {unit_id} for run {run_id}")
+        result_path = Path(result).resolve()
+        try:
+            relative = result_path.relative_to(self.root)
+        except ValueError as error:
+            raise ValueError("Run result must be inside the project") from error
+        if not result_path.is_file() or result_path.stat().st_size == 0:
+            raise ValueError(f"Run result is missing or empty: {result_path}")
+        relative_value = relative.as_posix()
+        result_hash = sha256_file(result_path)
+        if unit["status"] == "completed":
+            if (
+                unit["active_attempt_uid"] == attempt_uid
+                and unit["result_path"] == relative_value
+                and unit["result_sha256"] == result_hash
+            ):
+                payload = self.run_status(run_id)
+                payload["idempotent"] = True
+                return payload
+            raise ValueError(f"Run unit {unit_id} is already completed with a different result")
+        if unit["status"] != "in_progress" or unit["active_attempt_uid"] != attempt_uid:
+            raise ValueError("Stale or invalid run attempt; claim the unit again")
+        now = utc_now()
+        with self.connection:
+            updated = self.connection.execute(
+                """UPDATE run_units SET status='completed',result_path=?,result_sha256=?,
+                   error=NULL,completed_at=?,updated_at=?
+                   WHERE id=? AND status='in_progress' AND active_attempt_uid=?""",
+                (relative_value, result_hash, now, now, unit["id"], attempt_uid),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("Run attempt changed before the checkpoint was committed")
+            self._record_run_event(
+                run_id, "unit.completed", actor=actor, unit_id=unit_id,
+                from_status="in_progress", to_status="completed", attempt_uid=attempt_uid,
+                payload={"result_path": relative_value, "result_sha256": result_hash},
+                created_at=now,
+            )
+            remaining = self.connection.execute(
+                "SELECT COUNT(*) FROM run_units WHERE run_id=? AND status!='completed'", (run_id,)
+            ).fetchone()[0]
+            self.connection.execute(
+                "UPDATE runs SET status=?,updated_at=? WHERE run_id=?",
+                ("completed" if remaining == 0 else "running", now, run_id),
+            )
+            if remaining == 0:
+                self._record_run_event(
+                    run_id, "run.completed", actor=actor, from_status="running",
+                    to_status="completed", payload={"unit_count": self.connection.execute(
+                        "SELECT COUNT(*) FROM run_units WHERE run_id=?", (run_id,)
+                    ).fetchone()[0]}, created_at=now,
+                )
+        return self.run_status(run_id)
+
+    def fail_run_unit(
+        self,
+        run_id: str,
+        unit_id: str,
+        *,
+        attempt_uid: str,
+        error: str,
+        actor: str = "agent",
+    ) -> dict:
+        if not error.strip():
+            raise ValueError("A failure reason is required")
+        unit = self.connection.execute(
+            "SELECT * FROM run_units WHERE run_id=? AND unit_id=?", (run_id, unit_id)
+        ).fetchone()
+        if not unit:
+            raise ValueError(f"Unknown unit {unit_id} for run {run_id}")
+        if unit["status"] != "in_progress" or unit["active_attempt_uid"] != attempt_uid:
+            raise ValueError("Stale or invalid run attempt")
+        now = utc_now()
+        with self.connection:
+            self.connection.execute(
+                """UPDATE run_units SET status='failed',error=?,updated_at=?
+                   WHERE id=? AND status='in_progress' AND active_attempt_uid=?""",
+                (error, now, unit["id"], attempt_uid),
+            )
+            self.connection.execute(
+                "UPDATE runs SET status='paused',updated_at=? WHERE run_id=?", (now, run_id)
+            )
+            self._record_run_event(
+                run_id, "unit.failed", actor=actor, unit_id=unit_id,
+                from_status="in_progress", to_status="failed", attempt_uid=attempt_uid,
+                payload={"error": error}, created_at=now,
+            )
+        return self.run_status(run_id)
+
+    def checkpoint_run(
+        self,
+        run_id: str,
+        status_value: str,
+        *,
+        actor: str = "agent",
+        reason: str | None = None,
+    ) -> dict:
+        allowed = {"paused", "blocked_by_usage_limit", "needs_author_decision"}
+        if status_value not in allowed:
+            raise ValueError(f"Checkpoint status must be one of: {sorted(allowed)}")
+        run = self._run_row(run_id)
+        if run["status"] == "completed":
+            raise ValueError("A completed run cannot be paused")
+        now = utc_now()
+        with self.connection:
+            self.connection.execute(
+                "UPDATE runs SET status=?,updated_at=? WHERE run_id=?",
+                (status_value, now, run_id),
+            )
+            self._record_run_event(
+                run_id, "run.checkpointed", actor=actor, from_status=run["status"],
+                to_status=status_value, payload={"reason": reason}, created_at=now,
+            )
+        return self.run_status(run_id)
+
+    def resume_run(self, run_id: str, *, actor: str = "agent") -> dict:
+        run = self._run_row(run_id)
+        current = self.run_status(run_id)
+        if run["status"] == "completed" and current["coverage_complete"]:
+            return current
+        if any(issue["code"] == "source_plan_mismatch" for issue in current["issues"]):
+            raise ValueError("Run source revision no longer matches its immutable plan")
+        now = utc_now()
+        with self.connection:
+            verified_ids = {
+                unit["unit_id"] for unit in current["units"] if unit["verified"]
+            }
+            abandoned = [
+                unit for unit in self.connection.execute(
+                    """SELECT unit_id,status,active_attempt_uid FROM run_units
+                       WHERE run_id=? AND status IN ('in_progress','failed','completed')
+                       ORDER BY source_order,unit_id""",
+                    (run_id,),
+                ).fetchall()
+                if unit["status"] != "completed" or unit["unit_id"] not in verified_ids
+            ]
+            for unit in abandoned:
+                self.connection.execute(
+                    """UPDATE run_units SET status='pending',active_attempt_uid=NULL,worker_id=NULL,
+                       result_path=NULL,result_sha256=NULL,error=NULL,
+                       started_at=NULL,completed_at=NULL,updated_at=?
+                       WHERE run_id=? AND unit_id=?""",
+                    (now, run_id, unit["unit_id"]),
+                )
+                self._record_run_event(
+                    run_id, "unit.requeued", actor=actor, unit_id=unit["unit_id"],
+                    from_status=unit["status"], to_status="pending",
+                    attempt_uid=unit["active_attempt_uid"], created_at=now,
+                )
+            self.connection.execute(
+                "UPDATE runs SET status='pending',updated_at=? WHERE run_id=?", (now, run_id)
+            )
+            self._record_run_event(
+                run_id, "run.resumed", actor=actor, from_status=run["status"],
+                to_status="pending", payload={"requeued_units": len(abandoned)}, created_at=now,
+            )
+        return self.run_status(run_id)
+
+    def verify_run(self, run_id: str) -> dict:
+        status = self.run_status(run_id)
+        incomplete = [
+            unit["unit_id"] for unit in status["units"] if not unit["verified"]
+        ]
+        return {
+            "run_id": run_id,
+            "ok": status["coverage_complete"],
+            "unit_count": status["unit_count"],
+            "verified_completed": status["verified_completed"],
+            "progress_percent": status["progress_percent"],
+            "incomplete_unit_ids": incomplete,
+            "issues": status["issues"],
+        }
+
+    def run_history(self, run_id: str) -> list[dict]:
+        self._run_row(run_id)
+        history = []
+        for row in self.connection.execute(
+            "SELECT * FROM run_events WHERE run_id=? ORDER BY sequence", (run_id,)
+        ):
+            item = dict(row)
+            item["payload"] = json.loads(item.pop("payload_json"))
+            history.append(item)
+        return history
+
     def revision(self, revision_uid: str) -> dict:
         row = self.connection.execute(
             "SELECT * FROM manuscript_revisions WHERE revision_uid=?", (revision_uid,)
@@ -2500,6 +3004,18 @@ class ManuscriptProject:
             "application_count": self.connection.execute(
                 "SELECT COUNT(*) FROM change_applications"
             ).fetchone()[0],
+            "run_counts": {
+                row[0]: row[1]
+                for row in self.connection.execute(
+                    """SELECT r.status,COUNT(*) FROM runs r
+                       WHERE EXISTS(SELECT 1 FROM run_units u WHERE u.run_id=r.run_id)
+                       GROUP BY r.status"""
+                )
+            },
+            "legacy_unplanned_run_count": self.connection.execute(
+                """SELECT COUNT(*) FROM runs r
+                   WHERE NOT EXISTS(SELECT 1 FROM run_units u WHERE u.run_id=r.run_id)"""
+            ).fetchone()[0],
         }
 
     def verify(self) -> dict:
@@ -2625,5 +3141,22 @@ class ManuscriptProject:
                 if not application_source or application_source[0] != application["source_sha256"]:
                     issues.append("application source SHA-256 mismatch")
             results.append({"revision_uid": revision["revision_uid"], "ok": not issues, "issues": issues})
+        runs = [
+            self.verify_run(row[0])
+            for row in self.connection.execute(
+                """SELECT r.run_id FROM runs r
+                   WHERE EXISTS(SELECT 1 FROM run_units u WHERE u.run_id=r.run_id)
+                   ORDER BY r.created_at,r.run_id"""
+            )
+        ]
         integrity = self.connection.execute("PRAGMA integrity_check").fetchone()[0]
-        return {"ok": integrity == "ok" and all(item["ok"] for item in results), "database": integrity, "revisions": results}
+        return {
+            "ok": (
+                integrity == "ok"
+                and all(item["ok"] for item in results)
+                and all(item["ok"] for item in runs)
+            ),
+            "database": integrity,
+            "revisions": results,
+            "runs": runs,
+        }

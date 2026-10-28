@@ -67,7 +67,7 @@ There is no hard-coded word limit. Long books are split into stable, line-addres
 
 The practical limit is your AI provider's usage allowance and how long you are willing to let the multi-pass review run. A longer manuscript means more model turns and potentially more provider cost.
 
-## Resume an interrupted run
+## Resume an interrupted v1 workflow
 
 Each completed chunk is recorded in `work/state.json`. To inspect progress:
 
@@ -77,9 +77,21 @@ python .agents/skills/manuscript-roast/scripts/manuscript_workflow.py status --w
 
 The status command reports completed, pending, and stale report files. The agent continues from the first pending chunk instead of starting over.
 
-## Durable manuscript projects, revision diff, and safe apply (alpha)
+The durable project engine also provides ER-014 revision-bound runs for agent integrations. It records each chapter or paragraph as a separate work unit, issues a fresh attempt token when work is claimed, and accepts completion only with a non-empty project-local result. A stopped process can resume without repeating verified completed units:
 
-The ER-010 through ER-013 project engine keeps original imports as immutable, SHA-256-verified revisions and stores extracted structure, findings, decisions, structural diffs, reconciliation, correction approvals, and apply history in project-local SQLite. From a source checkout:
+```bash
+python scripts/editroast.py run create ./my-book roast-2026-10-28 r000002 --type manuscript-roast --scope chapter
+python scripts/editroast.py run claim ./my-book roast-2026-10-28 --worker codex-session-1
+python scripts/editroast.py run checkpoint ./my-book roast-2026-10-28 --status blocked_by_usage_limit --reason "Provider allowance reached"
+python scripts/editroast.py run resume ./my-book roast-2026-10-28
+python scripts/editroast.py run verify ./my-book roast-2026-10-28
+```
+
+`run complete` requires the claimed unit ID, its exact attempt token, and a result file inside the project. Coverage reaches 100% only while every recorded result still exists and matches its SHA-256. This engine stores orchestration state; it does not call a model or claim that an editorial judgment is correct.
+
+## Durable manuscript projects, revision diff, safe apply, and resumable runs (alpha)
+
+The ER-010 through ER-014 project engine keeps original imports as immutable, SHA-256-verified revisions and stores extracted structure, findings, decisions, structural diffs, reconciliation, correction approvals, apply history, and run checkpoints in project-local SQLite. From a source checkout:
 
 ```bash
 python scripts/editroast.py project create ./my-book --title "My Book" --language en

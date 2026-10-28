@@ -369,7 +369,7 @@ class SafeApplyTests(unittest.TestCase):
             finally:
                 connection.close()
             with ManuscriptProject.open(project_path) as migrated:
-                self.assertEqual(migrated.status()["schema_version"], 4)
+                self.assertEqual(migrated.status()["schema_version"], 5)
                 self.assertEqual(migrated.corrections(), [])
                 self.assertEqual(migrated.application_history(), [])
                 self.assertTrue(migrated.verify()["ok"])
