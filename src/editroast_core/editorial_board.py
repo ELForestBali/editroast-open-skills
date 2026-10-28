@@ -6,6 +6,7 @@ This first slice is intentionally stateless; ER-014 orchestration is a later ste
 from __future__ import annotations
 
 from collections import defaultdict
+import json
 import re
 from pathlib import Path
 
@@ -227,7 +228,7 @@ def preview_editorial_board(
 # ER-021 S2: chapter-scoped, resumable editorial lenses on existing ER-014 runs.
 # This does not contact an AI provider and never gives the board authority to
 # approve or apply changes on behalf of the author.
-REVIEW_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\\Z")
+REVIEW_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
 
 
 def _review_run_id(review_id: str, role: str) -> str:
@@ -250,7 +251,6 @@ def start_editorial_lenses(
             "SELECT provenance_json FROM runs WHERE run_id=?", (run_id,)
         ).fetchone()
         if existing is not None:
-            import json
             provenance = json.loads(existing["provenance_json"])
             if provenance.get("editorial_map_run_id") != map_run_id:
                 raise ValueError("Review ID is already bound to a different book map")
