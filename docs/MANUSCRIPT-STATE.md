@@ -73,6 +73,8 @@ Each revision is compared with its direct parent. Relations are `unchanged`, `ch
 
 Underdetermined matches are never accepted automatically. They contain ranked candidates, numeric confidence, a coarse confidence label, and the evidence used to score them. A manual resolution appends a `resolve` event; reopening appends another event that supersedes the previous one. Neither action changes source snapshots, revision rows, paragraph text, or stored IDs. The effective relation is an overlay suitable for future approval tooling, correction lists, and targeted re-analysis.
 
+An active before-side or after-side stable ID can be owned by only one effective diff group. Reconciliation rejects overlaps with automatic or manually resolved groups using a deterministic conflict error. Split and merge remain valid because their multiple members belong to one group; reopening that group releases its claims before a replacement mapping is recorded.
+
 The structured diff stores lexical risk signals for changed text: numbers, negation tokens, and capitalized terms. These are prompts for human review only. The engine does not claim to determine semantic equivalence, factual correctness, character identity, or authorial intent. Low-confidence changes remain in the reconciliation queue even when such signals are present.
 
 ## Ingestion and completeness

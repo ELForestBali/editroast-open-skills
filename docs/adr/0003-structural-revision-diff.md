@@ -14,6 +14,8 @@ Store the parent-to-child comparison as typed diff groups with ordered before/af
 
 Represent uncertain mappings as unresolved groups with ranked candidates and confidence. Do not mutate revisions or stable IDs when a person resolves them. Instead, append resolve/reopen events and compute an effective relation from the latest event. Keep the original automatic result and every manual decision inspectable.
 
+Require every active before-side and after-side stable ID to have at most one owning group. Permit one-to-many split and many-to-one merge membership inside that owner, but reject incompatible cross-group reuse. A reopen event releases the group's active claims.
+
 Expose lexical changes in names/capitalized terms, numbers, and negation tokens as risk signals only. Do not label them as proven changes of meaning or authorial intent.
 
 Retain `paragraph_changes` as the PR-02 compatibility view while storing the richer representation in schema version 3. Backfill existing projects without deleting legacy state. Omit manuscript text from CLI diff output by default.

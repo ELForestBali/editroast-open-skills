@@ -1496,6 +1496,69 @@ class ManuscriptProject:
         elif relation_type == "merged" and not (len(before_ids) >= 2 and len(after_ids) == 1):
             raise ValueError("merged requires at least two before IDs and one after ID")
 
+    def _effective_mapping_claims(
+        self, revision_uid: str, *, excluding_group_uid: str
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Return active before/after ID owners for all other diff groups."""
+        before_claims: dict[str, str] = {}
+        after_claims: dict[str, str] = {}
+        groups = self.connection.execute(
+            """SELECT * FROM revision_diff_groups
+               WHERE revision_uid=? AND group_uid<>? ORDER BY group_uid""",
+            (revision_uid, excluding_group_uid),
+        )
+        for group in groups:
+            event = self.connection.execute(
+                """SELECT action,before_stable_ids_json,after_stable_ids_json
+                   FROM reconciliation_events WHERE group_uid=?
+                   ORDER BY sequence DESC LIMIT 1""",
+                (group["group_uid"],),
+            ).fetchone()
+            if event:
+                if event["action"] == "reopen":
+                    continue
+                before_ids = json.loads(event["before_stable_ids_json"])
+                after_ids = json.loads(event["after_stable_ids_json"])
+            elif group["status"] == "needs_reconciliation" or group["relation_type"] == "ambiguous":
+                continue
+            else:
+                members = self.connection.execute(
+                    """SELECT side,entity_stable_id FROM revision_diff_members
+                       WHERE group_uid=? ORDER BY side,entity_stable_id""",
+                    (group["group_uid"],),
+                ).fetchall()
+                before_ids = [row["entity_stable_id"] for row in members if row["side"] == "before"]
+                after_ids = [row["entity_stable_id"] for row in members if row["side"] == "after"]
+            for stable_id_value in before_ids:
+                before_claims.setdefault(stable_id_value, group["group_uid"])
+            for stable_id_value in after_ids:
+                after_claims.setdefault(stable_id_value, group["group_uid"])
+        return before_claims, after_claims
+
+    def _validate_reconciliation_conflicts(
+        self,
+        revision_uid: str,
+        group_uid: str,
+        before_ids: list[str],
+        after_ids: list[str],
+    ) -> None:
+        before_claims, after_claims = self._effective_mapping_claims(
+            revision_uid, excluding_group_uid=group_uid
+        )
+        conflicts = [
+            ("before", stable_id_value, before_claims[stable_id_value])
+            for stable_id_value in before_ids if stable_id_value in before_claims
+        ] + [
+            ("after", stable_id_value, after_claims[stable_id_value])
+            for stable_id_value in after_ids if stable_id_value in after_claims
+        ]
+        if conflicts:
+            details = "; ".join(
+                f"{side} {stable_id_value} is claimed by {owner}"
+                for side, stable_id_value, owner in sorted(conflicts)
+            )
+            raise ValueError(f"Reconciliation conflicts with active mappings: {details}")
+
     def reconcile(
         self,
         revision_uid: str,
@@ -1551,6 +1614,9 @@ class ManuscriptProject:
                 f"Reconciliation IDs do not belong to the compared revisions: "
                 f"before={sorted(unknown_before)}, after={sorted(unknown_after)}"
             )
+        self._validate_reconciliation_conflicts(
+            revision_uid, group_uid, before_ids, after_ids
+        )
         previous = self.connection.execute(
             "SELECT event_uid FROM reconciliation_events WHERE group_uid=? ORDER BY sequence DESC LIMIT 1",
             (group_uid,),

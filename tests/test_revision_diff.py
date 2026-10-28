@@ -181,6 +181,124 @@ class RevisionDiffTests(unittest.TestCase):
                 ))
                 self.assertTrue(project.verify()["ok"])
 
+    def test_effective_mapping_conflicts_and_reopen_are_consistent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_path, _, second = self._two_revisions(root)
+            with ManuscriptProject.open(project_path) as project:
+                queue = project.reconciliation_queue(second["revision_uid"])
+                shared: tuple[dict, dict, str] | None = None
+                for left_index, left in enumerate(queue):
+                    left_ids = {
+                        before_id
+                        for candidate in left["candidates"]
+                        for before_id in candidate["before_stable_ids"]
+                    }
+                    for right in queue[left_index + 1:]:
+                        right_ids = {
+                            before_id
+                            for candidate in right["candidates"]
+                            for before_id in candidate["before_stable_ids"]
+                        }
+                        overlap = sorted(left_ids & right_ids)
+                        if overlap:
+                            shared = left, right, overlap[0]
+                            break
+                    if shared:
+                        break
+                self.assertIsNotNone(shared)
+                left, right, old_id = shared  # type: ignore[misc]
+
+                left_candidate = next(
+                    candidate for candidate in left["candidates"]
+                    if old_id in candidate["before_stable_ids"]
+                )
+                right_candidate = next(
+                    candidate for candidate in right["candidates"]
+                    if old_id in candidate["before_stable_ids"]
+                )
+                project.reconcile(
+                    second["revision_uid"], left["group_uid"],
+                    candidate_uid=left_candidate["candidate_uid"], actor="test-author",
+                )
+                with self.assertRaisesRegex(
+                    ValueError, rf"before {old_id} is claimed by {left['group_uid']}"
+                ):
+                    project.reconcile(
+                        second["revision_uid"], right["group_uid"],
+                        candidate_uid=right_candidate["candidate_uid"], actor="test-author",
+                    )
+
+                project.reopen_reconciliation(
+                    second["revision_uid"], left["group_uid"], actor="test-author"
+                )
+                project.reconcile(
+                    second["revision_uid"], right["group_uid"],
+                    candidate_uid=right_candidate["candidate_uid"], actor="test-author",
+                )
+                with self.assertRaisesRegex(
+                    ValueError, rf"before {old_id} is claimed by {right['group_uid']}"
+                ):
+                    project.reconcile(
+                        second["revision_uid"], left["group_uid"],
+                        candidate_uid=left_candidate["candidate_uid"], actor="test-author",
+                    )
+
+    def test_effective_mapping_rejects_automatic_overlap_but_allows_split_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_path, _, second = self._two_revisions(root)
+            with ManuscriptProject.open(project_path) as project:
+                payload = project.revision_diff(second["revision_uid"])
+                automatic = next(
+                    group for group in payload["groups"]
+                    if group["entity_type"] == "paragraph"
+                    and group["status"] == "auto"
+                    and any(member["side"] == "before" for member in group["members"])
+                )
+                unresolved = next(
+                    group for group in payload["groups"]
+                    if group["entity_type"] == "paragraph"
+                    and group["status"] == "needs_reconciliation"
+                    and group["candidates"]
+                )
+                automatic_before = next(
+                    member["stable_id"] for member in automatic["members"]
+                    if member["side"] == "before"
+                )
+                unresolved_after = next(
+                    member["stable_id"] for member in unresolved["members"]
+                    if member["side"] == "after"
+                )
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"before {automatic_before} is claimed by {automatic['group_uid']}",
+                ):
+                    project.reconcile(
+                        second["revision_uid"], unresolved["group_uid"],
+                        relation_type="changed", before_ids=[automatic_before],
+                        after_ids=[unresolved_after], actor="test-author",
+                    )
+
+                split = next(
+                    group for group in payload["groups"]
+                    if group["entity_type"] == "paragraph" and group["relation_type"] == "split"
+                )
+                split_before = [
+                    member["stable_id"] for member in split["members"] if member["side"] == "before"
+                ]
+                split_after = [
+                    member["stable_id"] for member in split["members"] if member["side"] == "after"
+                ]
+                resolved_split = project.reconcile(
+                    second["revision_uid"], split["group_uid"], relation_type="split",
+                    before_ids=split_before, after_ids=split_after, actor="test-author",
+                )
+                self.assertEqual(resolved_split["effective_relation_type"], "split")
+                self.assertEqual(
+                    resolved_split["resolution"]["after_stable_ids"], split_after
+                )
+
     def test_schema_v3_backfills_saved_pr02_projects(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
