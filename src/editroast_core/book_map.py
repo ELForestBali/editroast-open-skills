@@ -145,13 +145,16 @@ def read_book_map(path: str | Path, *, max_bytes: int = MAX_MAP_BYTES) -> dict:
 def _record_class(record: dict) -> str | None:
     value = record.get("record_class")
     if value is not None:
-        return value
+        return value if isinstance(value, str) else None
+    epistemic = record.get("epistemic_status")
+    if not isinstance(epistemic, str):
+        return None
     return {
         "observed": "observed_fact",
         "inferred": "editorial_hypothesis",
         "uncertain": "editorial_hypothesis",
         "author_confirmed": "author_decision",
-    }.get(record.get("epistemic_status"))
+    }.get(epistemic)
 
 
 def _source_paragraphs(project: ManuscriptProject, revision_uid: str) -> dict[str, dict]:
@@ -194,17 +197,17 @@ def _validate_records(
         if not isinstance(kind, str) or kind not in RECORD_KINDS:
             errors.append(f"{prefix}: unsupported record kind")
         epistemic = record.get("epistemic_status")
-        if epistemic not in EPISTEMIC_LABELS:
+        if not isinstance(epistemic, str) or epistemic not in EPISTEMIC_LABELS:
             errors.append(f"{prefix}: unsupported epistemic status")
         record_class = _record_class(record)
-        if record_class not in RECORD_CLASSES or (strict and "record_class" not in record):
+        if not isinstance(record_class, str) or record_class not in RECORD_CLASSES or (strict and "record_class" not in record):
             errors.append(f"{prefix}: unsupported or missing record class")
         expected_epistemic = {
             "observed_fact": {"observed"},
             "editorial_hypothesis": {"inferred", "uncertain"},
             "author_decision": {"author_confirmed"},
         }.get(record_class, set())
-        if epistemic in EPISTEMIC_LABELS and epistemic not in expected_epistemic:
+        if isinstance(epistemic, str) and epistemic in EPISTEMIC_LABELS and epistemic not in expected_epistemic:
             errors.append(f"{prefix}: record class conflicts with epistemic status")
         scope = record.get("scope")
         if not isinstance(scope, str) or scope not in SCOPES:
@@ -216,14 +219,14 @@ def _validate_records(
             errors.append(f"{prefix}: missing statement")
         review_status = record.get("review_status")
         if strict:
-            if review_status not in REVIEW_STATUSES:
+            if not isinstance(review_status, str) or review_status not in REVIEW_STATUSES:
                 errors.append(f"{prefix}: unsupported or missing review status")
             elif expected_pass == "A" and review_status != "provisional":
                 errors.append(f"{prefix}: Pass A records must remain provisional")
             elif expected_pass == "B" and review_status == "provisional":
                 errors.append(f"{prefix}: Pass B records must carry a reviewed status")
         pov_type = record.get("pov_type")
-        if pov_type is not None and pov_type not in POV_TYPES:
+        if pov_type is not None and (not isinstance(pov_type, str) or pov_type not in POV_TYPES):
             errors.append(f"{prefix}: unsupported POV type")
         sequence = record.get("sequence")
         if sequence is not None:
@@ -233,7 +236,8 @@ def _validate_records(
                 order = sequence.get("reading_order")
                 if not isinstance(order, int) or isinstance(order, bool) or order < 0:
                     errors.append(f"{prefix}: sequence reading_order must be a non-negative integer")
-                if sequence.get("chronology") not in CHRONOLOGY_LABELS:
+                chronology = sequence.get("chronology")
+                if not isinstance(chronology, str) or chronology not in CHRONOLOGY_LABELS:
                     errors.append(f"{prefix}: unsupported chronology label")
                 story_time = sequence.get("story_time")
                 if story_time is not None and not isinstance(story_time, str):
