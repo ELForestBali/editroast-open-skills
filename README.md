@@ -133,6 +133,23 @@ editorial judgment is correct. Invalid standalone maps return process exit
 status 2. See
 [ER-020 contract](docs/ER-020-BOOK-MAP-CONTRACT.md).
 
+## Editorial Board preview (ER-021 alpha)
+
+After completing a finalized ER-020 whole-book map, independently prepared
+Leo Shelf, Vera Sharp and Boris Marker source-anchored editorial observations
+can be checked and grouped:
+
+```bash
+python scripts/editroast.py editorial board-preview ./my-book map-run-01 --reviews ./three-lens-reviews.json
+```
+
+This **checks quotations against the immutable manuscript**, keeps
+contradictory perspectives open, groups only explicitly matching root-cause
+IDs, and returns a pending correction list. Chief Sterling is the chair, not a
+fourth editor. It does **not** run three AI agents, produce a final board
+judgment, apply edits, or record author approval yet. See
+[ER-021 contract](docs/ER-021-EDITORIAL-BOARD.md).
+
 ## Move or recover a durable project
 
 ER-015 exports a durable project as one `.editroast` archive and restores it into a new, non-existing directory. The bundle carries the canonical database, immutable revision snapshots, approvals, findings, application history, and completed run results referenced by the database:
