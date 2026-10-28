@@ -23,6 +23,7 @@ ALLOWED_IMPORTS = {
     "dataclasses",
     "datetime",
     "difflib",
+    "book_map",
     "editroast_core",
     "hashlib",
     "io",
