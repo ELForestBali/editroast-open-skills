@@ -23,6 +23,7 @@ ALLOWED_IMPORTS = {
     "dataclasses",
     "datetime",
     "difflib",
+    "board_synthesis",
     "book_map",
     "collections",
     "editorial_board",
