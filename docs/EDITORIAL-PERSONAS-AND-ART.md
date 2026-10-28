@@ -11,10 +11,10 @@ The Editorial Board is a **set of virtual editorial perspectives**, not employed
 | `reader_market` | Лёня Тираж | Leo Shelf | Curious, optimistic reader/market lens | Current |
 | `voice_emotion` | Вера Зоркая | Vera Sharp | Insightful literary voice and emotional truth | Current |
 | `structure_logic` | Борис Точка | Boris Marker | Methodical structure, causality and continuity | Current |
-| `editorial_board` | Редсовет; СанСаныч as chair | Editorial Board | Experienced chief-editor visual; synthesis and arbitration | Current |
+| `editorial_board` | Редсовет; СанСаныч as chair | Editorial Board; Chief Sterling as chair | Experienced chief-editor visual; synthesis and arbitration | Current |
 | `proofreader` | Корректор | Proofreader | Meticulous spelling, punctuation and consistency | Next reports |
 
-**Important:** СанСаныч is the *visual chair* of `editorial_board`, not an undocumented fourth independent reviewer. Proofreader is a different task from developmental analysis and should be shown only where proofreading is actually performed.
+**Important:** СанСаныч / Chief Sterling is the localized *chair* of `editorial_board`, not an undocumented fourth independent reviewer. Proofreader is a different task from developmental analysis and should be shown only where proofreading is actually performed.
 
 ## Future expansion (characters only — not capabilities)
 

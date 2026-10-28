@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.0-alpha.7 — unreleased
+
+- Added ER-020 two-pass whole-book mapping on the existing ER-014 resumable run engine, with Pass A inventory/global context and Pass B chapter synthesis.
+- Added canonical schema-v6 SQLite maps for characters, aliases, relationships, plotlines, arcs, scenes/events, chronology/causality, POV, promises/payoffs, motifs/devices, disagreements, author decisions, and open questions.
+- Added pre-checkpoint evidence/offset validation, Pass-A review coverage, compact progressive context, EN/RU synthetic golden books, portable bundle round trips, and a separate measured editorial-quality scorecard.
+
 ## 2.0.0-alpha.6 — unreleased
 
 - Added ER-015 portable `.editroast` project bundles containing immutable revisions, canonical SQLite state, approvals, findings, applications, and referenced run results.

@@ -30,7 +30,7 @@ The historical reviewed display names are:
 - `reader_market`: Лёня Тираж / Leo Shelf / Leo Tirada
 - `voice_emotion`: Вера Зоркая / Vera Sharp / Vera Aguda
 - `structure_logic`: Борис Точка / Boris Marker / Boris Punto
-- `editorial_board`: Редсовет / СанСаныч / Editorial Board / Consejo Editorial
+- `editorial_board`: Редсовет / СанСаныч / Editorial Board / Chief Sterling (chair) / Consejo Editorial
 
 The stable order is reader → voice → structure → board. Other locales must retain a reviewed name or a clearly neutral fallback; an agent must not improvise an alias and present it as historical localization.
 

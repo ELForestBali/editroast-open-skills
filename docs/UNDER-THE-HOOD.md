@@ -1,6 +1,6 @@
 # Under the hood: why EditRoast is more than a prompt pack
 
-> **Implementation snapshot:** EditRoast Open Skills `2.0.0-alpha.1`, commit `4f4ba3eb70ba0e8ca21666df935fda51ce18969f` (28 October 2026). This page describes *implemented*, inspectable functionality at this commit; future features are explicitly labelled as such.
+> **Implementation snapshot:** EditRoast Open Skills `2.0.0-alpha.7` development branch (28 October 2026). This page describes implemented, inspectable functionality; future features are explicitly labelled as such. Release/PR notes record the final commit SHA.
 
 EditRoast does use instructions and an AI model for judgments about literary quality. That is intentional. The distinction from a plain prompt template is the **code that prepares a whole manuscript, retains persistent state, verifies evidence, packages each skill independently, and makes the workflow auditable**. This does not mean the software can prove that an editorial opinion is correct.
 
@@ -21,7 +21,8 @@ Installed SKILL.md                 ← explains workflow to the selected AI agen
          │     └── work/evidence.jsonl
          │
          ├── Agent reads whole-book map and reviews individual chunks
-         │     └── work/chapter-reports/<chunk-id>.md
+         │     ├── ER-020 Pass A / Pass B use ER-014 run checkpoints
+         │     └── canonical schema-v6 map + verified unit results
          │
          ├── Local evidence and coverage validation
          │     └── verified chapter/chunk references, source-matching quotes
@@ -41,6 +42,14 @@ For the precise architectural decision, see [ADR-0001](adr/0001-canonical-core-a
 
 **Evidence validation:** The offline validator checks chunk/report coverage, valid source line ranges, and whether quoted passages actually match extracted source text after whitespace normalization. This catches missing chapters and fabricated or miscopied *quotes*. It cannot fact-check literary claims, assess thematic insight, or guarantee that the AI noticed every problem.
 
+**Whole-book map:** ER-020 uses two chapter-scoped ER-014 runs. Pass A
+inventories global structure and provisional actors/context; Pass B receives
+compact verified context and performs evidence-linked chapter synthesis. Core
+validates record classes, narrative frames, exact quotes/offsets, record links,
+full Pass-A review coverage and source hashes before writing the canonical map
+to SQLite. Integrity validation and editorial-quality scorecards remain
+separate.
+
 **Preliminary decision ledger:** A small SQLite CLI snapshots imported versions with SHA-256, records findings/statuses, collects candidate translation decisions, exports CSV, and blocks progression while there are pending translation decisions. This is compatibility scaffolding from a preview. It is **not yet** the future revision engine: it does not automatically apply approved changes, track paragraphs across rewritten versions, or translate books.
 
 **Distribution:** The Python release builder composes independently installable archives from a single source tree, sorts inputs, normalizes ZIP metadata, and writes SHA-256 checksums. The installer targets isolated Codex and Claude Code project folders. Directly copying raw `skills/<name>/` source folders is insufficient because those folders do not yet contain the vendored runtime.
@@ -49,12 +58,12 @@ For the precise architectural decision, see [ADR-0001](adr/0001-canonical-core-a
 
 | Skill | Implemented in this snapshot | Not implemented yet |
 |---|---|---|
-| `manuscript-roast` | Multi-pass full-book review instructions, book map, stable chunks, resumable state, evidence and coverage checks, Markdown outputs; reviewed virtual editor names | Fully automated multi-persona orchestration, polished branded PDF with QR, approved-change rewrite |
+| `manuscript-roast` | Multi-pass full-book review instructions; ER-020 two-pass canonical book map; stable chunks; resumable state; evidence and coverage checks; Markdown outputs; reviewed virtual editor names | ER-021 multi-persona orchestration and one comparative re-review report; polished branded PDF with QR |
 | `manuscript-proofreading` | Full-book proofreading instructions, style/consistency tracking, line-grounded findings and reporting via the local workflow | Apply-to-DOCX with verified tracked changes, permanent cross-revision finding matching |
 | `literary-translation` **BETA** | Rules for author approval, ambiguous-term inventory and glossary/decision ledger | End-to-end book translation, author-interview PDF, ongoing alignment/invalidation, literary QA |
 | `book-production` **BETA** | Destination/intake and safety guidance, KDP-specific lessons in reference materials | Generating print-ready PDF, EPUB, DOCX, KDP preflight/acceptance, cover construction |
 
-The characters Leo Shelf, Vera Sharp, Boris Marker, and the Editorial Board represent different **editorial lenses**, not four paid human editors or four independently deployed models.
+Leo Shelf, Vera Sharp, Boris Marker, and Chief Sterling as chair of the Editorial Board represent different **editorial lenses**, not four paid human editors or four independently deployed models.
 
 ## 4. Source size and reproducibility (fixed commit snapshot)
 

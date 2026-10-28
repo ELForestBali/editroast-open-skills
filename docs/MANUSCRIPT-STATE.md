@@ -44,6 +44,9 @@ Imports are copied through `.staging/`, flushed, SHA-256 checked, and atomically
 | `runs` | Revision-bound run identity, type, status, immutable plan hash and provenance |
 | `run_units` | Ordered chapter/paragraph work units, attempt token, result path/hash and retry state |
 | `run_events` | Append-only run, checkpoint, claim, completion, failure and requeue history |
+| `book_maps` | Finalized revision-bound map identity, two pass run IDs, coverage, integrity status and separate quality assessment |
+| `book_map_records` | Canonical observed facts, editorial hypotheses and author decisions with source pass/unit provenance |
+| `book_map_evidence` | Ordered exact revision/paragraph/quote anchors and optional offsets for each map record |
 | `audit_log` | Schema, project and revision lifecycle events |
 
 When a project contains the PR-01 preview tables (`revisions`, `findings`, `decisions`), opening it creates corresponding durable revision, finding, decision and event records. The old tables remain available, so `scripts/editroast_state.py --project ...` continues to work. A migrated snapshot that has no old structured paragraph map is labelled `legacy`; its original hash and decision/finding history remain inspectable. Opening a schema-v2 project backfills its existing PR-02 change rows into the structured API. Evidence unavailable in the old schema is explicitly marked as legacy or unresolved rather than invented.
@@ -104,9 +107,34 @@ Checkpoints distinguish `paused`, `blocked_by_usage_limit`, and `needs_author_de
 
 This is local orchestration and integrity state. It does not make live model calls, infer provider quota, purchase credits, or verify the quality of an editorial report.
 
+## Whole-book maps
+
+ER-020 builds on ER-014 instead of introducing another checkpoint mechanism.
+`book-map start` creates a chapter-scoped Pass A run; every accepted result is
+validated before `complete_run_unit` records its path and SHA-256. `book-map
+advance` is blocked until every Pass A unit remains verified, then creates the
+chapter-scoped Pass B run. Pass B claim responses carry the current chapter
+(text only with explicit `--include-text`), the whole-book heading inventory,
+and compact verified context from prior work.
+
+Pass A records are provisional. Pass B must explicitly account for every Pass
+A record and may confirm, dispute, supersede or leave an interpretation open.
+Every record separates `observed_fact`, `editorial_hypothesis`, or
+`author_decision`; it carries an epistemic label, narrative frame, exact source
+evidence and optional record links, chronology and POV type. Dreams,
+flashbacks, unreliable narration and ambiguous identity are first-class
+frames, not automatic continuity errors.
+
+Finalization requires intact coverage for both runs, validates all links and
+Pass-A review coverage, and atomically writes schema-v6 `book_maps`,
+`book_map_records` and `book_map_evidence`. `manuscript verify` rechecks the
+source SHA, both run coverages and every stored quote/offset. Integrity status
+and editorial-quality assessment are separate fields; a successful integrity
+check does not certify literary judgment.
+
 ## Portable project bundles
 
-ER-015 writes one `.editroast` ZIP container with a format-versioned `manifest.json`, a checkpointed canonical SQLite backup, a generated portable `project.json`, every immutable revision snapshot, and completed run results referenced by `run_units`. SQLite WAL/SHM files, `.staging`, orphaned snapshots, and unreferenced `work/` or `reports/` files are excluded.
+ER-015 writes one `.editroast` ZIP container with a format-versioned `manifest.json`, a checkpointed canonical SQLite backup (including finalized whole-book maps), a generated portable `project.json`, every immutable revision snapshot, and completed run results referenced by `run_units`. SQLite WAL/SHM files, `.staging`, orphaned snapshots, and unreferenced `work/` or `reports/` files are excluded.
 
 Before export, revision/database integrity and completed-result hashes must pass. Known service JSON fields redact credential values and absolute local paths, the SQLite copy is vacuumed, and every final payload is scanned for credential-like patterns and private absolute paths. Manuscript snapshots are not rewritten because that would invalidate revision hashes; a detected secret/path in immutable content blocks export with an error.
 
