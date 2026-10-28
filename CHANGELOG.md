@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.0-alpha.3 — unreleased
+
+- Added ER-012 structural revision diffs for chapter and paragraph moves, changes, splits, merges, additions, removals, and repeated-fragment ambiguity.
+- Added ranked reconciliation candidates with confidence and lexical risk signals for names, numbers, and negations; these signals do not claim to infer meaning or authorial intent.
+- Added append-only manual reconciliation history, schema-v3 backfill for PR-02 projects, diff integrity checks, and offline CLI commands for inspection and resolution.
+
 ## 2.0.0-alpha.2 — unreleased
 
 - Added ER-010 durable SQLite manuscript projects, schema migrations, immutable revision snapshots, integrity verification, revision-linked findings, and append-only author-decision history.

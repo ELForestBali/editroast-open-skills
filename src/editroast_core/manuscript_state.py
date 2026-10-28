@@ -6,7 +6,6 @@ content, load external resources, or make network requests.
 
 from __future__ import annotations
 
-import difflib
 import hashlib
 import json
 import os
@@ -21,8 +20,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from xml.etree import ElementTree
 
+from .revision_diff import confidence_label, plan_chapter_diff, plan_paragraph_diff, text_similarity
 
-SCHEMA_VERSION = 2
+
+SCHEMA_VERSION = 3
 SUPPORTED_SUFFIXES = {".docx", ".txt", ".md", ".markdown"}
 MAX_ARCHIVE_MEMBERS = 5_000
 MAX_ARCHIVE_UNCOMPRESSED = 256 * 1024 * 1024
@@ -57,10 +58,6 @@ def sha256_file(path: Path) -> str:
 
 def normalized_text(text: str) -> str:
     return " ".join(text.casefold().split())
-
-
-def fingerprint(text: str) -> str:
-    return sha256_bytes(normalized_text(text).encode("utf-8"))
 
 
 def stable_id(prefix: str) -> str:
@@ -515,6 +512,59 @@ CREATE INDEX IF NOT EXISTS idx_paragraphs_fingerprint ON paragraphs(revision_uid
 CREATE INDEX IF NOT EXISTS idx_findings_revision ON editorial_findings(source_revision_uid);
 """
 
+MIGRATION_3 = """
+CREATE TABLE IF NOT EXISTS revision_diff_groups(
+    group_uid TEXT PRIMARY KEY,
+    revision_uid TEXT NOT NULL REFERENCES manuscript_revisions(revision_uid),
+    parent_revision_uid TEXT,
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('chapter','paragraph')),
+    relation_type TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    status TEXT NOT NULL,
+    semantic_signals_json TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS revision_diff_members(
+    id INTEGER PRIMARY KEY,
+    group_uid TEXT NOT NULL REFERENCES revision_diff_groups(group_uid),
+    side TEXT NOT NULL CHECK(side IN ('before','after')),
+    entity_stable_id TEXT NOT NULL,
+    paragraph_id INTEGER,
+    source_order INTEGER NOT NULL,
+    chapter_stable_id TEXT,
+    text_snapshot TEXT NOT NULL,
+    UNIQUE(group_uid,side,entity_stable_id)
+);
+CREATE TABLE IF NOT EXISTS reconciliation_candidates(
+    candidate_uid TEXT PRIMARY KEY,
+    group_uid TEXT NOT NULL REFERENCES revision_diff_groups(group_uid),
+    before_stable_ids_json TEXT NOT NULL,
+    after_stable_ids_json TEXT NOT NULL,
+    relation_type TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    rank INTEGER NOT NULL,
+    signals_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reconciliation_events(
+    sequence INTEGER PRIMARY KEY,
+    event_uid TEXT NOT NULL UNIQUE,
+    group_uid TEXT NOT NULL REFERENCES revision_diff_groups(group_uid),
+    action TEXT NOT NULL CHECK(action IN ('resolve','reopen')),
+    relation_type TEXT,
+    before_stable_ids_json TEXT NOT NULL,
+    after_stable_ids_json TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL,
+    supersedes_event_uid TEXT REFERENCES reconciliation_events(event_uid)
+);
+CREATE INDEX IF NOT EXISTS idx_diff_groups_revision ON revision_diff_groups(revision_uid,entity_type);
+CREATE INDEX IF NOT EXISTS idx_diff_members_group ON revision_diff_members(group_uid,side);
+CREATE INDEX IF NOT EXISTS idx_candidates_group ON reconciliation_candidates(group_uid,rank);
+CREATE INDEX IF NOT EXISTS idx_reconciliation_events_group ON reconciliation_events(group_uid,sequence);
+"""
+
 
 def _table_columns(connection: sqlite3.Connection, name: str) -> set[str]:
     return {row[1] for row in connection.execute(f'PRAGMA table_info("{name}")')}
@@ -540,13 +590,28 @@ def _apply_migrations(connection: sqlite3.Connection, root: Path) -> None:
     migrated = connection.execute(
         "SELECT 1 FROM schema_migrations WHERE version=2"
     ).fetchone()
-    if migrated:
+    if not migrated:
+        _migrate_preview_ledger(connection, root)
+        connection.execute(
+            "INSERT INTO schema_migrations(version,name,applied_at) VALUES(2,?,?)",
+            ("preserve preview ledger", utc_now()),
+        )
+    migrated_diff = connection.execute(
+        "SELECT 1 FROM schema_migrations WHERE version=3"
+    ).fetchone()
+    if migrated_diff:
+        connection.executescript(MIGRATION_3)
         return
-    _migrate_preview_ledger(connection, root)
-    connection.execute(
-        "INSERT INTO schema_migrations(version,name,applied_at) VALUES(2,?,?)",
-        ("preserve preview ledger", utc_now()),
-    )
+    connection.executescript("BEGIN;\n" + MIGRATION_3)
+    try:
+        _backfill_revision_diffs(connection)
+        connection.execute(
+            "INSERT INTO schema_migrations(version,name,applied_at) VALUES(3,?,?)",
+            ("structural revision diff and reconciliation", utc_now()),
+        )
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def _migrate_preview_ledger(connection: sqlite3.Connection, root: Path) -> None:
@@ -637,209 +702,216 @@ def _migrate_preview_ledger(connection: sqlite3.Connection, root: Path) -> None:
     )
 
 
-def _chapter_for_order(chapters: list[ExtractedChapter], order: int) -> int:
-    for index, chapter in enumerate(chapters):
-        if chapter.start_paragraph <= order <= chapter.end_paragraph:
-            return index
-    return max(0, len(chapters) - 1)
+def _backfill_revision_diffs(connection: sqlite3.Connection) -> None:
+    """Expose PR-02 change rows through the v3 structured-diff API without rewriting them."""
+    revisions = connection.execute(
+        "SELECT revision_uid,parent_revision_uid,created_at FROM manuscript_revisions ORDER BY id"
+    ).fetchall()
+    for revision in revisions:
+        revision_uid = revision["revision_uid"]
+        if connection.execute(
+            "SELECT 1 FROM revision_diff_groups WHERE revision_uid=? LIMIT 1", (revision_uid,)
+        ).fetchone():
+            continue
+        for change in connection.execute(
+            "SELECT * FROM paragraph_changes WHERE revision_uid=? ORDER BY id", (revision_uid,)
+        ):
+            try:
+                details = json.loads(change["details_json"] or "{}")
+            except json.JSONDecodeError:
+                details = {"legacy_details_invalid": True}
+            relation = details.get("relation_type", change["change_type"])
+            group_uid = f"legacy-dg-{change['id']}"
+            connection.execute(
+                """INSERT INTO revision_diff_groups VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    group_uid, revision_uid, revision["parent_revision_uid"], "paragraph",
+                    relation, change["similarity"] if change["similarity"] is not None else 1.0,
+                    "needs_reconciliation" if change["change_type"] == "ambiguous" else "legacy_auto",
+                    json.dumps({"semantic_interpretation": "not_evaluated", "legacy_backfill": True}),
+                    json.dumps(details, ensure_ascii=False, sort_keys=True), revision["created_at"],
+                ),
+            )
+            for side, paragraph_id in (
+                ("before", change["previous_paragraph_id"]),
+                ("after", change["current_paragraph_id"]),
+            ):
+                if paragraph_id is None:
+                    continue
+                paragraph = connection.execute(
+                    "SELECT * FROM paragraphs WHERE id=?", (paragraph_id,)
+                ).fetchone()
+                if paragraph:
+                    connection.execute(
+                        """INSERT INTO revision_diff_members(
+                            group_uid,side,entity_stable_id,paragraph_id,source_order,
+                            chapter_stable_id,text_snapshot
+                        ) VALUES(?,?,?,?,?,?,?)""",
+                        (
+                            group_uid, side, paragraph["stable_id"], paragraph["id"],
+                            paragraph["source_order"], paragraph["chapter_stable_id"], paragraph["text"],
+                        ),
+                    )
+        if revision["parent_revision_uid"]:
+            represented_before = {
+                row[0] for row in connection.execute(
+                    """SELECT m.entity_stable_id
+                       FROM revision_diff_members m
+                       JOIN revision_diff_groups g ON g.group_uid=m.group_uid
+                       WHERE g.revision_uid=? AND g.entity_type='paragraph' AND m.side='before'""",
+                    (revision_uid,),
+                )
+            }
+            for paragraph in connection.execute(
+                "SELECT * FROM paragraphs WHERE revision_uid=? ORDER BY source_order",
+                (revision["parent_revision_uid"],),
+            ).fetchall():
+                if paragraph["stable_id"] in represented_before:
+                    continue
+                group_uid = f"legacy-dg-unresolved-{revision_uid}-{paragraph['id']}"
+                connection.execute(
+                    """INSERT INTO revision_diff_groups VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        group_uid, revision_uid, revision["parent_revision_uid"], "paragraph",
+                        "ambiguous", 0.0, "needs_reconciliation",
+                        json.dumps({
+                            "semantic_interpretation": "not_evaluated",
+                            "legacy_backfill": True,
+                        }),
+                        json.dumps({"legacy_unmatched_before": True}), revision["created_at"],
+                    ),
+                )
+                connection.execute(
+                    """INSERT INTO revision_diff_members(
+                        group_uid,side,entity_stable_id,paragraph_id,source_order,
+                        chapter_stable_id,text_snapshot
+                    ) VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        group_uid, "before", paragraph["stable_id"], paragraph["id"],
+                        paragraph["source_order"], paragraph["chapter_stable_id"], paragraph["text"],
+                    ),
+                )
+        current_chapters = connection.execute(
+            "SELECT * FROM chapters WHERE revision_uid=? ORDER BY source_order", (revision_uid,)
+        ).fetchall()
+        previous_by_stable = {
+            row["stable_id"]: row
+            for row in connection.execute(
+                "SELECT * FROM chapters WHERE revision_uid=?", (revision["parent_revision_uid"],)
+            )
+        } if revision["parent_revision_uid"] else {}
+        seen_previous: set[str] = set()
+        for chapter in current_chapters:
+            previous = previous_by_stable.get(chapter["stable_id"])
+            relation = "added"
+            if previous:
+                seen_previous.add(previous["stable_id"])
+                relation = "changed" if previous["title"] != chapter["title"] else (
+                    "moved" if previous["source_order"] != chapter["source_order"] else "unchanged"
+                )
+            group_uid = f"legacy-ch-{revision_uid}-{chapter['id']}"
+            connection.execute(
+                "INSERT INTO revision_diff_groups VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    group_uid, revision_uid, revision["parent_revision_uid"], "chapter", relation,
+                    1.0, "legacy_auto",
+                    json.dumps({"semantic_interpretation": "not_evaluated", "legacy_backfill": True}),
+                    "{}", revision["created_at"],
+                ),
+            )
+            if previous:
+                connection.execute(
+                    """INSERT INTO revision_diff_members(
+                        group_uid,side,entity_stable_id,paragraph_id,source_order,chapter_stable_id,text_snapshot
+                    ) VALUES(?,?,?,?,?,?,?)""",
+                    (group_uid, "before", previous["stable_id"], None, previous["source_order"], previous["stable_id"], previous["title"]),
+                )
+            connection.execute(
+                """INSERT INTO revision_diff_members(
+                    group_uid,side,entity_stable_id,paragraph_id,source_order,chapter_stable_id,text_snapshot
+                ) VALUES(?,?,?,?,?,?,?)""",
+                (group_uid, "after", chapter["stable_id"], None, chapter["source_order"], chapter["stable_id"], chapter["title"]),
+            )
+        for previous in previous_by_stable.values():
+            if previous["stable_id"] in seen_previous:
+                continue
+            group_uid = f"legacy-ch-removed-{revision_uid}-{previous['id']}"
+            connection.execute(
+                "INSERT INTO revision_diff_groups VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    group_uid, revision_uid, revision["parent_revision_uid"], "chapter", "removed",
+                    1.0, "legacy_auto",
+                    json.dumps({"semantic_interpretation": "not_evaluated", "legacy_backfill": True}),
+                    "{}", revision["created_at"],
+                ),
+            )
+            connection.execute(
+                """INSERT INTO revision_diff_members(
+                    group_uid,side,entity_stable_id,paragraph_id,source_order,chapter_stable_id,text_snapshot
+                ) VALUES(?,?,?,?,?,?,?)""",
+                (group_uid, "before", previous["stable_id"], None, previous["source_order"], previous["stable_id"], previous["title"]),
+            )
 
 
 def _reconcile_chapters(
     chapters: list[ExtractedChapter], old_rows: list[sqlite3.Row]
 ) -> list[tuple[str, str]]:
-    result: list[tuple[str, str]] = []
-    available = set(range(len(old_rows)))
-    for chapter in chapters:
-        candidates = [
-            index
-            for index in available
-            if normalized_text(old_rows[index]["title"]) == normalized_text(chapter.title)
-        ]
-        if len(candidates) == 1:
-            selected = candidates[0]
-            available.remove(selected)
-            result.append((old_rows[selected]["stable_id"], "matched"))
-        elif len(candidates) > 1:
-            closest = min(candidates, key=lambda index: abs(old_rows[index]["source_order"] - chapter.source_order))
-            tied = [
-                index for index in candidates
-                if abs(old_rows[index]["source_order"] - chapter.source_order)
-                == abs(old_rows[closest]["source_order"] - chapter.source_order)
-            ]
-            if len(tied) == 1:
-                available.remove(closest)
-                result.append((old_rows[closest]["stable_id"], "matched"))
-            else:
-                result.append((stable_id("ch"), "ambiguous"))
-        else:
-            same_position = [
-                index for index in available
-                if old_rows[index]["source_order"] == chapter.source_order
-            ]
-            if len(same_position) == 1:
-                selected = same_position[0]
-                similarity = difflib.SequenceMatcher(
-                    None,
-                    normalized_text(old_rows[selected]["title"]),
-                    normalized_text(chapter.title),
-                    autojunk=False,
-                ).ratio()
-                if similarity >= 0.35:
-                    available.remove(selected)
-                    result.append((old_rows[selected]["stable_id"], "changed"))
-                    continue
-            result.append((stable_id("ch"), "new"))
-    return result
-
-
-def _paragraph_occurrences(fingerprints: list[str]) -> list[int]:
-    seen: dict[str, int] = {}
-    result: list[int] = []
-    for value in fingerprints:
-        seen[value] = seen.get(value, 0) + 1
-        result.append(seen[value])
-    return result
-
-
-def _reconcile_paragraphs(
-    paragraphs: list[ExtractedParagraph],
-    chapter_ids: list[str],
-    chapters: list[ExtractedChapter],
-    old_rows: list[sqlite3.Row],
-) -> tuple[list[dict], list[dict]]:
-    new_fps = [fingerprint(paragraph.text) for paragraph in paragraphs]
-    occurrences = _paragraph_occurrences(new_fps)
-    old_by_fp: dict[str, list[int]] = {}
-    new_by_fp: dict[str, list[int]] = {}
+    results: list[tuple[str, str] | None] = [None] * len(chapters)
+    available_old = set(range(len(old_rows)))
+    available_new = set(range(len(chapters)))
+    old_by_title: dict[str, list[int]] = {}
+    new_by_title: dict[str, list[int]] = {}
     for index, row in enumerate(old_rows):
-        old_by_fp.setdefault(row["text_fingerprint"], []).append(index)
-    for index, value in enumerate(new_fps):
-        new_by_fp.setdefault(value, []).append(index)
+        old_by_title.setdefault(normalized_text(row["title"]), []).append(index)
+    for index, chapter in enumerate(chapters):
+        new_by_title.setdefault(normalized_text(chapter.title), []).append(index)
 
-    assignments: dict[int, tuple[int, str, float]] = {}
-    used_old: set[int] = set()
-    ambiguous: set[int] = set()
-    for value, new_indexes in new_by_fp.items():
-        old_indexes = old_by_fp.get(value, [])
-        if len(new_indexes) == len(old_indexes) == 1:
-            assignments[new_indexes[0]] = (old_indexes[0], "unchanged", 1.0)
-            used_old.add(old_indexes[0])
-        elif old_indexes and len(new_indexes) == len(old_indexes):
-            # Occurrence order is an identity signal only while the repeated run count is stable.
+    # Reserve exact chapter identities globally before considering positional renames.
+    for title, new_indexes in new_by_title.items():
+        old_indexes = old_by_title.get(title, [])
+        if old_indexes and len(old_indexes) == len(new_indexes):
             for new_index, old_index in zip(new_indexes, old_indexes):
-                assignments[new_index] = (old_index, "unchanged", 1.0)
-                used_old.add(old_index)
-        elif old_indexes:
-            for new_index in new_indexes:
-                before = new_fps[new_index - 1] if new_index else None
-                after = new_fps[new_index + 1] if new_index + 1 < len(new_fps) else None
-                scored: list[tuple[int, int]] = []
-                for old_index in old_indexes:
-                    if old_index in used_old:
-                        continue
-                    score = 0
-                    if before and old_rows[old_index]["context_before"] == before:
-                        score += 3
-                    if after and old_rows[old_index]["context_after"] == after:
-                        score += 3
-                    if old_rows[old_index]["chapter_stable_id"] == chapter_ids[_chapter_for_order(chapters, new_index)]:
-                        score += 2
-                    scored.append((score, old_index))
-                scored.sort(reverse=True)
-                if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
-                    assignments[new_index] = (scored[0][1], "unchanged", 1.0)
-                    used_old.add(scored[0][1])
-                else:
-                    ambiguous.add(new_index)
+                results[new_index] = (old_rows[old_index]["stable_id"], "matched")
+                available_new.discard(new_index)
+                available_old.discard(old_index)
 
-    unmatched_new = [index for index in range(len(paragraphs)) if index not in assignments and index not in ambiguous]
-    unmatched_old = [index for index in range(len(old_rows)) if index not in used_old]
     proposals: dict[int, list[tuple[float, int]]] = {}
-    for new_index in unmatched_new:
-        chapter_id = chapter_ids[_chapter_for_order(chapters, new_index)]
-        for old_index in unmatched_old:
-            if old_rows[old_index]["chapter_stable_id"] != chapter_id:
-                continue
-            ratio = difflib.SequenceMatcher(
-                None, normalized_text(old_rows[old_index]["text"]), normalized_text(paragraphs[new_index].text), autojunk=False
-            ).ratio()
-            if ratio >= 0.55:
-                proposals.setdefault(new_index, []).append((ratio, old_index))
-    for new_index, candidates in proposals.items():
-        candidates.sort(reverse=True)
-        best_ratio, best_old = candidates[0]
-        reciprocal = [
-            (ratio, candidate_new)
-            for candidate_new, values in proposals.items()
-            for ratio, candidate_old in values
-            if candidate_old == best_old
-        ]
-        reciprocal.sort(reverse=True)
-        unique_new = len(candidates) == 1 or best_ratio > candidates[1][0] + 0.05
-        unique_old = reciprocal and reciprocal[0][1] == new_index and (
-            len(reciprocal) == 1 or reciprocal[0][0] > reciprocal[1][0] + 0.05
-        )
-        if unique_new and unique_old and best_old not in used_old:
-            assignments[new_index] = (best_old, "changed", best_ratio)
-            used_old.add(best_old)
-        elif best_ratio >= 0.75:
-            ambiguous.add(new_index)
+    for new_index in available_new:
+        for old_index in available_old:
+            title_score = text_similarity(old_rows[old_index]["title"], chapters[new_index].title)
+            position_score = 1.0 / (1.0 + abs(old_rows[old_index]["source_order"] - chapters[new_index].source_order))
+            score = title_score * 0.85 + position_score * 0.15
+            if score >= 0.55:
+                proposals.setdefault(new_index, []).append((score, old_index))
+    for values in proposals.values():
+        values.sort(reverse=True)
+    reciprocal: dict[int, list[tuple[float, int]]] = {}
+    for new_index, values in proposals.items():
+        for score, old_index in values:
+            reciprocal.setdefault(old_index, []).append((score, new_index))
+    for values in reciprocal.values():
+        values.sort(reverse=True)
+    for new_index, values in sorted(proposals.items(), key=lambda item: -item[1][0][0]):
+        if new_index not in available_new:
+            continue
+        score, old_index = values[0]
+        if old_index not in available_old:
+            continue
+        new_margin = score - values[1][0] if len(values) > 1 else score
+        old_values = reciprocal[old_index]
+        old_margin = score - old_values[1][0] if len(old_values) > 1 else score
+        if old_values[0][1] == new_index and score >= 0.62 and new_margin >= 0.08 and old_margin >= 0.08:
+            results[new_index] = (old_rows[old_index]["stable_id"], "changed")
+            available_new.remove(new_index)
+            available_old.remove(old_index)
 
-    records: list[dict] = []
-    changes: list[dict] = []
-    for index, paragraph in enumerate(paragraphs):
-        old_assignment = assignments.get(index)
-        if old_assignment:
-            old_index, change_type, similarity = old_assignment
-            paragraph_id = old_rows[old_index]["stable_id"]
-            status = "matched" if change_type == "unchanged" else "changed"
-            previous_id = old_rows[old_index]["id"]
+    for new_index in available_new:
+        values = proposals.get(new_index, [])
+        if values and values[0][0] >= 0.55:
+            results[new_index] = (stable_id("ch"), "ambiguous")
         else:
-            change_type = "ambiguous" if index in ambiguous else "added"
-            paragraph_id = stable_id("p")
-            status = change_type
-            similarity = None
-            previous_id = None
-        chapter_order = _chapter_for_order(chapters, index)
-        records.append(
-            {
-                "stable_id": paragraph_id,
-                "chapter_stable_id": chapter_ids[chapter_order],
-                "source_order": index,
-                "chapter_order": chapter_order,
-                "text": paragraph.text,
-                "normalized_text": normalized_text(paragraph.text),
-                "text_fingerprint": new_fps[index],
-                "occurrence_index": occurrences[index],
-                "context_before": new_fps[index - 1] if index else None,
-                "context_after": new_fps[index + 1] if index + 1 < len(new_fps) else None,
-                "style_json": json.dumps(paragraph.style, ensure_ascii=False, sort_keys=True),
-                "runs_json": json.dumps(paragraph.runs, ensure_ascii=False, sort_keys=True),
-                "source_ref_json": json.dumps(paragraph.source_ref, ensure_ascii=False, sort_keys=True),
-                "reconciliation_status": status,
-            }
-        )
-        changes.append(
-            {
-                "paragraph_stable_id": paragraph_id,
-                "previous_paragraph_id": previous_id,
-                "new_index": index,
-                "change_type": change_type,
-                "similarity": similarity,
-            }
-        )
-    for old_index, row in enumerate(old_rows):
-        if old_index not in used_old:
-            changes.append(
-                {
-                    "paragraph_stable_id": row["stable_id"],
-                    "previous_paragraph_id": row["id"],
-                    "new_index": None,
-                    "change_type": "removed",
-                    "similarity": None,
-                }
-            )
-    return records, changes
+            results[new_index] = (stable_id("ch"), "new")
+    return [result for result in results if result is not None]
 
 
 class ManuscriptProject:
@@ -904,36 +976,40 @@ class ManuscriptProject:
             raise ValueError(f"EditRoast database not found: {database_file}")
         connection = sqlite3.connect(database_file)
         project = cls(root, connection)
-        with connection:
-            _apply_migrations(connection, root)
-            if not connection.execute("SELECT 1 FROM projects LIMIT 1").fetchone():
-                now = utc_now()
-                project_id = stable_id("project")
-                connection.execute(
-                    "INSERT INTO projects VALUES(?,?,?,?,?,?,?)",
-                    (project_id, now, now, None, None, None, json.dumps({"migrated_preview": True})),
-                )
-                if not (root / "project.json").exists():
-                    atomic_json(
-                        root / "project.json",
-                        {"schema_version": SCHEMA_VERSION, "project_id": project_id, "created_at": now},
+        try:
+            with connection:
+                _apply_migrations(connection, root)
+                if not connection.execute("SELECT 1 FROM projects LIMIT 1").fetchone():
+                    now = utc_now()
+                    project_id = stable_id("project")
+                    connection.execute(
+                        "INSERT INTO projects VALUES(?,?,?,?,?,?,?)",
+                        (project_id, now, now, None, None, None, json.dumps({"migrated_preview": True})),
                     )
-        project_file = root / "project.json"
-        if not project_file.exists():
-            row = connection.execute("SELECT * FROM projects LIMIT 1").fetchone()
-            atomic_json(
-                project_file,
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "project_id": row["id"],
-                    "created_at": row["created_at"],
-                    "title": row["title"],
-                    "author": row["author"],
-                    "language": row["language"],
-                },
-            )
-        project._recover_incomplete_files()
-        return project
+                    if not (root / "project.json").exists():
+                        atomic_json(
+                            root / "project.json",
+                            {"schema_version": SCHEMA_VERSION, "project_id": project_id, "created_at": now},
+                        )
+            project_file = root / "project.json"
+            if not project_file.exists():
+                row = connection.execute("SELECT * FROM projects LIMIT 1").fetchone()
+                atomic_json(
+                    project_file,
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "project_id": row["id"],
+                        "created_at": row["created_at"],
+                        "title": row["title"],
+                        "author": row["author"],
+                        "language": row["language"],
+                    },
+                )
+            project._recover_incomplete_files()
+            return project
+        except Exception:
+            connection.close()
+            raise
 
     def close(self) -> None:
         self.connection.close()
@@ -964,6 +1040,57 @@ class ManuscriptProject:
             contained = [path.relative_to(self.root).as_posix() for path in child.rglob("*") if path.is_file()]
             if contained and not any(path in known for path in contained):
                 shutil.rmtree(child)
+
+    def _store_revision_diff(
+        self,
+        revision_uid: str,
+        parent_uid: str | None,
+        groups: list[dict],
+        candidates: list[dict],
+        current_ids: dict[int, int],
+        created_at: str,
+    ) -> None:
+        for group in groups:
+            self.connection.execute(
+                """INSERT INTO revision_diff_groups(
+                    group_uid,revision_uid,parent_revision_uid,entity_type,relation_type,
+                    confidence,status,semantic_signals_json,details_json,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    group["group_uid"], revision_uid, parent_uid, group["entity_type"],
+                    group["relation_type"], group["confidence"], group["status"],
+                    json.dumps(group["semantic_signals"], ensure_ascii=False, sort_keys=True),
+                    json.dumps(group["details"], ensure_ascii=False, sort_keys=True), created_at,
+                ),
+            )
+            for member in group["members"]:
+                paragraph_id = member.get("paragraph_id")
+                if member["side"] == "after" and "new_index" in member:
+                    paragraph_id = current_ids[member["new_index"]]
+                self.connection.execute(
+                    """INSERT INTO revision_diff_members(
+                        group_uid,side,entity_stable_id,paragraph_id,source_order,
+                        chapter_stable_id,text_snapshot
+                    ) VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        group["group_uid"], member["side"], member["stable_id"], paragraph_id,
+                        member["source_order"], member.get("chapter_stable_id"), member["text"],
+                    ),
+                )
+        for candidate in candidates:
+            self.connection.execute(
+                """INSERT INTO reconciliation_candidates(
+                    candidate_uid,group_uid,before_stable_ids_json,after_stable_ids_json,
+                    relation_type,confidence,rank,signals_json
+                ) VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    candidate["candidate_uid"], candidate["group_uid"],
+                    json.dumps(candidate["before_stable_ids"], ensure_ascii=False),
+                    json.dumps(candidate["after_stable_ids"], ensure_ascii=False),
+                    candidate["relation_type"], candidate["confidence"], candidate["rank"],
+                    json.dumps(candidate["signals"], ensure_ascii=False, sort_keys=True),
+                ),
+            )
 
     def import_manuscript(
         self,
@@ -997,9 +1124,16 @@ class ManuscriptProject:
         ) if parent_uid else []
         chapter_reconciliation = _reconcile_chapters(document.chapters, old_chapters)
         chapter_ids = [item[0] for item in chapter_reconciliation]
-        paragraph_records, changes = _reconcile_paragraphs(
+        paragraph_plan = plan_paragraph_diff(
             document.paragraphs, chapter_ids, document.chapters, old_paragraphs
         )
+        chapter_groups, chapter_candidates = plan_chapter_diff(
+            document.chapters, chapter_reconciliation, old_chapters
+        )
+        paragraph_records = paragraph_plan.paragraph_records
+        changes = paragraph_plan.compatibility_changes
+        diff_groups = chapter_groups + paragraph_plan.groups
+        diff_candidates = chapter_candidates + paragraph_plan.candidates
         next_id = self.connection.execute(
             "SELECT COALESCE(MAX(id),0)+1 FROM manuscript_revisions"
         ).fetchone()[0]
@@ -1069,9 +1203,9 @@ class ManuscriptProject:
                             record["occurrence_index"],
                             record["context_before"],
                             record["context_after"],
-                            record["style_json"],
-                            record["runs_json"],
-                            record["source_ref_json"],
+                            json.dumps(record["style_json"], ensure_ascii=False, sort_keys=True),
+                            json.dumps(record["runs_json"], ensure_ascii=False, sort_keys=True),
+                            json.dumps(record["source_ref_json"], ensure_ascii=False, sort_keys=True),
                             record["reconciliation_status"],
                         ),
                     )
@@ -1085,9 +1219,13 @@ class ManuscriptProject:
                         (
                             revision_uid, change["paragraph_stable_id"], change["previous_paragraph_id"],
                             current_ids.get(change["new_index"]), change["change_type"],
-                            change["similarity"], "{}",
+                            change["similarity"],
+                            json.dumps(change.get("details", {}), ensure_ascii=False, sort_keys=True),
                         ),
                     )
+                self._store_revision_diff(
+                    revision_uid, parent_uid, diff_groups, diff_candidates, current_ids, now
+                )
                 self.connection.execute(
                     "UPDATE projects SET updated_at=?,title=?,author=?,language=?",
                     (now, resolved_title, resolved_author, resolved_language),
@@ -1216,6 +1354,294 @@ class ManuscriptProject:
         payload["snapshot"] = str(self.root / payload["snapshot_path"])
         return payload
 
+    def revision_diff(
+        self,
+        revision_uid: str,
+        *,
+        from_revision: str | None = None,
+        include_text: bool = False,
+    ) -> dict:
+        revision = self.connection.execute(
+            "SELECT revision_uid,parent_revision_uid FROM manuscript_revisions WHERE revision_uid=?",
+            (revision_uid,),
+        ).fetchone()
+        if not revision:
+            raise ValueError(f"Unknown revision: {revision_uid}")
+        parent_uid = revision["parent_revision_uid"]
+        if from_revision is not None and from_revision != parent_uid:
+            raise ValueError(
+                "Stored identity reconciliation is defined for a revision and its direct parent"
+            )
+        groups: list[dict] = []
+        summary: dict[str, int] = {}
+        unresolved = 0
+        for row in self.connection.execute(
+            """SELECT * FROM revision_diff_groups
+               WHERE revision_uid=? ORDER BY entity_type,group_uid""",
+            (revision_uid,),
+        ):
+            group = dict(row)
+            group["semantic_signals"] = json.loads(group.pop("semantic_signals_json"))
+            group["details"] = json.loads(group.pop("details_json"))
+            group["confidence_label"] = confidence_label(group["confidence"])
+            members = []
+            for member_row in self.connection.execute(
+                """SELECT side,entity_stable_id,paragraph_id,source_order,
+                          chapter_stable_id,text_snapshot
+                   FROM revision_diff_members WHERE group_uid=?
+                   ORDER BY CASE side WHEN 'before' THEN 0 ELSE 1 END,source_order,id""",
+                (group["group_uid"],),
+            ):
+                member = dict(member_row)
+                member["stable_id"] = member.pop("entity_stable_id")
+                if include_text:
+                    member["text"] = member.pop("text_snapshot")
+                else:
+                    member.pop("text_snapshot")
+                members.append(member)
+            group["members"] = members
+            group["candidates"] = [
+                {
+                    "candidate_uid": candidate["candidate_uid"],
+                    "before_stable_ids": json.loads(candidate["before_stable_ids_json"]),
+                    "after_stable_ids": json.loads(candidate["after_stable_ids_json"]),
+                    "relation_type": candidate["relation_type"],
+                    "confidence": candidate["confidence"],
+                    "confidence_label": confidence_label(candidate["confidence"]),
+                    "rank": candidate["rank"],
+                    "signals": json.loads(candidate["signals_json"]),
+                }
+                for candidate in self.connection.execute(
+                    "SELECT * FROM reconciliation_candidates WHERE group_uid=? ORDER BY rank,candidate_uid",
+                    (group["group_uid"],),
+                )
+            ]
+            event = self.connection.execute(
+                """SELECT * FROM reconciliation_events WHERE group_uid=?
+                   ORDER BY sequence DESC LIMIT 1""",
+                (group["group_uid"],),
+            ).fetchone()
+            effective_relation = group["relation_type"]
+            if event and event["action"] == "resolve":
+                group["status"] = "manually_resolved"
+                effective_relation = event["relation_type"]
+                group["resolution"] = {
+                    "event_uid": event["event_uid"],
+                    "relation_type": event["relation_type"],
+                    "before_stable_ids": json.loads(event["before_stable_ids_json"]),
+                    "after_stable_ids": json.loads(event["after_stable_ids_json"]),
+                    "actor": event["actor"],
+                    "note": event["note"],
+                    "created_at": event["created_at"],
+                }
+            elif event and event["action"] == "reopen":
+                group["status"] = "needs_reconciliation"
+                group["resolution"] = {
+                    "event_uid": event["event_uid"], "action": "reopen",
+                    "actor": event["actor"], "note": event["note"],
+                    "created_at": event["created_at"],
+                }
+            group["effective_relation_type"] = effective_relation
+            summary[effective_relation] = summary.get(effective_relation, 0) + 1
+            if group["status"] == "needs_reconciliation":
+                unresolved += 1
+            groups.append(group)
+        groups.sort(
+            key=lambda group: (
+                0 if group["entity_type"] == "chapter" else 1,
+                min((member["source_order"] for member in group["members"]), default=10**12),
+                group["group_uid"],
+            )
+        )
+        return {
+            "from_revision": parent_uid,
+            "to_revision": revision_uid,
+            "summary": summary,
+            "unresolved_count": unresolved,
+            "groups": groups,
+            "semantic_notice": (
+                "Name/number/negation fields are lexical risk signals only; "
+                "authorial intent and semantic equivalence are not inferred."
+            ),
+        }
+
+    def reconciliation_queue(self, revision_uid: str, *, include_text: bool = False) -> list[dict]:
+        return [
+            group for group in self.revision_diff(revision_uid, include_text=include_text)["groups"]
+            if group["status"] == "needs_reconciliation"
+        ]
+
+    def _validate_reconciliation_shape(
+        self, relation_type: str, before_ids: list[str], after_ids: list[str]
+    ) -> None:
+        allowed = {"unchanged", "changed", "moved", "split", "merged", "added", "removed"}
+        if relation_type not in allowed:
+            raise ValueError(f"Unsupported reconciliation relation: {relation_type}")
+        shapes = {
+            "unchanged": (1, 1), "changed": (1, 1), "moved": (1, 1),
+            "added": (0, None), "removed": (None, 0),
+        }
+        if relation_type in shapes:
+            expected_before, expected_after = shapes[relation_type]
+            if expected_before is not None and len(before_ids) != expected_before:
+                raise ValueError(f"{relation_type} requires {expected_before} before ID(s)")
+            if expected_after is not None and len(after_ids) != expected_after:
+                raise ValueError(f"{relation_type} requires {expected_after} after ID(s)")
+            if relation_type == "added" and not after_ids:
+                raise ValueError("added requires at least one after ID")
+            if relation_type == "removed" and not before_ids:
+                raise ValueError("removed requires at least one before ID")
+        elif relation_type == "split" and not (len(before_ids) == 1 and len(after_ids) >= 2):
+            raise ValueError("split requires one before ID and at least two after IDs")
+        elif relation_type == "merged" and not (len(before_ids) >= 2 and len(after_ids) == 1):
+            raise ValueError("merged requires at least two before IDs and one after ID")
+
+    def reconcile(
+        self,
+        revision_uid: str,
+        group_uid: str,
+        *,
+        relation_type: str | None = None,
+        before_ids: list[str] | None = None,
+        after_ids: list[str] | None = None,
+        candidate_uid: str | None = None,
+        actor: str = "author",
+        note: str | None = None,
+    ) -> dict:
+        group = self.connection.execute(
+            "SELECT * FROM revision_diff_groups WHERE revision_uid=? AND group_uid=?",
+            (revision_uid, group_uid),
+        ).fetchone()
+        if not group:
+            raise ValueError(f"Unknown diff group for {revision_uid}: {group_uid}")
+        if not actor.strip():
+            raise ValueError("Reconciliation actor is required")
+        if candidate_uid:
+            candidate = self.connection.execute(
+                """SELECT * FROM reconciliation_candidates
+                   WHERE candidate_uid=? AND group_uid=?""",
+                (candidate_uid, group_uid),
+            ).fetchone()
+            if not candidate:
+                raise ValueError(f"Unknown candidate for group {group_uid}: {candidate_uid}")
+            relation_type = candidate["relation_type"]
+            before_ids = json.loads(candidate["before_stable_ids_json"])
+            after_ids = json.loads(candidate["after_stable_ids_json"])
+        before_ids = list(dict.fromkeys(before_ids or []))
+        after_ids = list(dict.fromkeys(after_ids or []))
+        if relation_type is None:
+            raise ValueError("A relation type or candidate is required")
+        self._validate_reconciliation_shape(relation_type, before_ids, after_ids)
+        table = "paragraphs" if group["entity_type"] == "paragraph" else "chapters"
+        valid_before = {
+            row[0] for row in self.connection.execute(
+                f"SELECT stable_id FROM {table} WHERE revision_uid=?",
+                (group["parent_revision_uid"],),
+            )
+        } if group["parent_revision_uid"] else set()
+        valid_after = {
+            row[0] for row in self.connection.execute(
+                f"SELECT stable_id FROM {table} WHERE revision_uid=?", (revision_uid,)
+            )
+        }
+        unknown_before = set(before_ids) - valid_before
+        unknown_after = set(after_ids) - valid_after
+        if unknown_before or unknown_after:
+            raise ValueError(
+                f"Reconciliation IDs do not belong to the compared revisions: "
+                f"before={sorted(unknown_before)}, after={sorted(unknown_after)}"
+            )
+        previous = self.connection.execute(
+            "SELECT event_uid FROM reconciliation_events WHERE group_uid=? ORDER BY sequence DESC LIMIT 1",
+            (group_uid,),
+        ).fetchone()
+        event_uid = stable_id("rec")
+        now = utc_now()
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO reconciliation_events(
+                    event_uid,group_uid,action,relation_type,before_stable_ids_json,
+                    after_stable_ids_json,actor,note,created_at,supersedes_event_uid
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    event_uid, group_uid, "resolve", relation_type,
+                    json.dumps(before_ids, ensure_ascii=False),
+                    json.dumps(after_ids, ensure_ascii=False), actor, note, now,
+                    previous[0] if previous else None,
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO audit_log(event_type,revision_uid,payload_json,created_at) VALUES(?,?,?,?)",
+                (
+                    "reconciliation.resolved", revision_uid,
+                    json.dumps({"group_uid": group_uid, "event_uid": event_uid, "actor": actor}), now,
+                ),
+            )
+        return next(
+            item for item in self.revision_diff(revision_uid)["groups"]
+            if item["group_uid"] == group_uid
+        )
+
+    def reopen_reconciliation(
+        self, revision_uid: str, group_uid: str, *, actor: str = "author", note: str | None = None
+    ) -> dict:
+        group = self.connection.execute(
+            "SELECT 1 FROM revision_diff_groups WHERE revision_uid=? AND group_uid=?",
+            (revision_uid, group_uid),
+        ).fetchone()
+        if not group:
+            raise ValueError(f"Unknown diff group for {revision_uid}: {group_uid}")
+        if not actor.strip():
+            raise ValueError("Reconciliation actor is required")
+        previous = self.connection.execute(
+            "SELECT event_uid FROM reconciliation_events WHERE group_uid=? ORDER BY sequence DESC LIMIT 1",
+            (group_uid,),
+        ).fetchone()
+        event_uid = stable_id("rec")
+        now = utc_now()
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO reconciliation_events(
+                    event_uid,group_uid,action,relation_type,before_stable_ids_json,
+                    after_stable_ids_json,actor,note,created_at,supersedes_event_uid
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    event_uid, group_uid, "reopen", None, "[]", "[]", actor, note, now,
+                    previous[0] if previous else None,
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO audit_log(event_type,revision_uid,payload_json,created_at) VALUES(?,?,?,?)",
+                (
+                    "reconciliation.reopened", revision_uid,
+                    json.dumps({"group_uid": group_uid, "event_uid": event_uid, "actor": actor}), now,
+                ),
+            )
+        return next(
+            item for item in self.revision_diff(revision_uid)["groups"]
+            if item["group_uid"] == group_uid
+        )
+
+    def reconciliation_history(self, revision_uid: str, group_uid: str | None = None) -> list[dict]:
+        parameters: list[str] = [revision_uid]
+        where = "g.revision_uid=?"
+        if group_uid:
+            where += " AND e.group_uid=?"
+            parameters.append(group_uid)
+        rows = self.connection.execute(
+            f"""SELECT e.* FROM reconciliation_events e
+                JOIN revision_diff_groups g ON g.group_uid=e.group_uid
+                WHERE {where} ORDER BY e.sequence""",
+            parameters,
+        )
+        history = []
+        for row in rows:
+            event = dict(row)
+            event["before_stable_ids"] = json.loads(event.pop("before_stable_ids_json"))
+            event["after_stable_ids"] = json.loads(event.pop("after_stable_ids_json"))
+            history.append(event)
+        return history
+
     def revisions(self) -> list[dict]:
         return [self.revision(row[0]) for row in self.connection.execute(
             "SELECT revision_uid FROM manuscript_revisions ORDER BY id"
@@ -1237,6 +1663,15 @@ class ManuscriptProject:
                 for row in self.connection.execute("SELECT status,COUNT(*) FROM author_decisions GROUP BY status")
             },
             "finding_count": self.connection.execute("SELECT COUNT(*) FROM editorial_findings").fetchone()[0],
+            "unresolved_reconciliation_count": self.connection.execute(
+                """SELECT COUNT(*) FROM revision_diff_groups g
+                   WHERE g.status='needs_reconciliation'
+                   AND NOT EXISTS(
+                       SELECT 1 FROM reconciliation_events e WHERE e.group_uid=g.group_uid
+                       AND e.sequence=(SELECT MAX(e2.sequence) FROM reconciliation_events e2 WHERE e2.group_uid=g.group_uid)
+                       AND e.action='resolve'
+                   )"""
+            ).fetchone()[0],
         }
 
     def verify(self) -> dict:
@@ -1264,6 +1699,51 @@ class ManuscriptProject:
                 issues.append("paragraph completeness mismatch")
             if actual_chapters != revision["chapter_count"]:
                 issues.append("chapter completeness mismatch")
+            for entity_type, table in (("paragraph", "paragraphs"), ("chapter", "chapters")):
+                expected_after = {
+                    row[0] for row in self.connection.execute(
+                        f"SELECT stable_id FROM {table} WHERE revision_uid=?",
+                        (revision["revision_uid"],),
+                    )
+                }
+                member_after = [
+                    row[0] for row in self.connection.execute(
+                        """SELECT m.entity_stable_id
+                           FROM revision_diff_members m
+                           JOIN revision_diff_groups g ON g.group_uid=m.group_uid
+                           WHERE g.revision_uid=? AND g.entity_type=? AND m.side='after'""",
+                        (revision["revision_uid"], entity_type),
+                    )
+                ]
+                if set(member_after) != expected_after or len(member_after) != len(expected_after):
+                    issues.append(f"{entity_type} diff after-side completeness mismatch")
+
+                parent_uid = revision["parent_revision_uid"]
+                if parent_uid:
+                    expected_before = {
+                        row[0] for row in self.connection.execute(
+                            f"SELECT stable_id FROM {table} WHERE revision_uid=?", (parent_uid,)
+                        )
+                    }
+                    represented_before = {
+                        row[0] for row in self.connection.execute(
+                            """SELECT m.entity_stable_id
+                               FROM revision_diff_members m
+                               JOIN revision_diff_groups g ON g.group_uid=m.group_uid
+                               WHERE g.revision_uid=? AND g.entity_type=? AND m.side='before'""",
+                            (revision["revision_uid"], entity_type),
+                        )
+                    }
+                    for candidate in self.connection.execute(
+                        """SELECT c.before_stable_ids_json
+                           FROM reconciliation_candidates c
+                           JOIN revision_diff_groups g ON g.group_uid=c.group_uid
+                           WHERE g.revision_uid=? AND g.entity_type=?""",
+                        (revision["revision_uid"], entity_type),
+                    ):
+                        represented_before.update(json.loads(candidate[0]))
+                    if represented_before != expected_before:
+                        issues.append(f"{entity_type} diff before-side completeness mismatch")
             if revision["content_map_hash"]:
                 rows = self.connection.execute(
                     """SELECT source_order,text,style_json,runs_json,source_ref_json
