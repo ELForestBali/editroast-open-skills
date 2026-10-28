@@ -7,7 +7,11 @@ import json
 import sqlite3
 
 from .manuscript_state import ManuscriptProject
-from .editorial_board import preview_editorial_board
+from .editorial_board import (
+    preview_editorial_board, start_editorial_lenses, editorial_lenses_status,
+    claim_editorial_lens_unit, complete_editorial_lens_unit,
+    preview_completed_editorial_lenses,
+)
 from .book_map import (
     MAX_QUALITY_BYTES,
     advance_book_map,
@@ -245,6 +249,33 @@ def build_parser() -> argparse.ArgumentParser:
     editorial_preview.add_argument("project")
     editorial_preview.add_argument("map_run_id")
     editorial_preview.add_argument("--reviews", required=True)
+    editorial_start = editorial_actions.add_parser("start")
+    editorial_start.add_argument("project")
+    editorial_start.add_argument("map_run_id")
+    editorial_start.add_argument("review_id")
+    editorial_status = editorial_actions.add_parser("status")
+    editorial_status.add_argument("project")
+    editorial_status.add_argument("map_run_id")
+    editorial_status.add_argument("review_id")
+    editorial_claim = editorial_actions.add_parser("claim")
+    editorial_claim.add_argument("project")
+    editorial_claim.add_argument("map_run_id")
+    editorial_claim.add_argument("review_id")
+    editorial_claim.add_argument("--persona", required=True)
+    editorial_claim.add_argument("--worker", required=True)
+    editorial_claim.add_argument("--include-text", action="store_true")
+    editorial_complete = editorial_actions.add_parser("complete")
+    editorial_complete.add_argument("project")
+    editorial_complete.add_argument("map_run_id")
+    editorial_complete.add_argument("review_id")
+    editorial_complete.add_argument("unit_id")
+    editorial_complete.add_argument("--persona", required=True)
+    editorial_complete.add_argument("--attempt", required=True)
+    editorial_complete.add_argument("--result", required=True)
+    editorial_result = editorial_actions.add_parser("preview")
+    editorial_result.add_argument("project")
+    editorial_result.add_argument("map_run_id")
+    editorial_result.add_argument("review_id")
 
     bundle_group = groups.add_parser("bundle")
     bundle_actions = bundle_group.add_subparsers(dest="action", required=True)
@@ -277,6 +308,24 @@ def run(args: argparse.Namespace) -> int:
             if args.group == "editorial" and args.action == "board-preview":
                 payload = preview_editorial_board(
                     project, args.map_run_id, read_book_map(args.reviews)
+                )
+            elif args.group == "editorial" and args.action == "start":
+                payload = start_editorial_lenses(project, args.map_run_id, args.review_id)
+            elif args.group == "editorial" and args.action == "status":
+                payload = editorial_lenses_status(project, args.map_run_id, args.review_id)
+            elif args.group == "editorial" and args.action == "claim":
+                payload = claim_editorial_lens_unit(
+                    project, args.map_run_id, args.review_id, args.persona,
+                    worker_id=args.worker, include_text=args.include_text,
+                )
+            elif args.group == "editorial" and args.action == "complete":
+                payload = complete_editorial_lens_unit(
+                    project, args.map_run_id, args.review_id, args.persona,
+                    args.unit_id, attempt_uid=args.attempt, result=args.result,
+                )
+            elif args.group == "editorial" and args.action == "preview":
+                payload = preview_completed_editorial_lenses(
+                    project, args.map_run_id, args.review_id,
                 )
             elif args.group == "book-map" and args.action == "inventory":
                 payload = inventory_book(project, args.revision, include_text=args.include_text)
