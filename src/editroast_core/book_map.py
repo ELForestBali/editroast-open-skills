@@ -137,6 +137,8 @@ def validate_book_map(project: ManuscriptProject, revision_uid: str, payload: di
         if original is None:
             errors.append(f"chapters: unknown chapter {cid}")
             continue
+        if chapter.get("title") != original["title"] or chapter.get("source_order") != original["source_order"]:
+            errors.append(f"chapters: source heading/order mismatch for {cid}")
         refs = chapter.get("paragraphs")
         if not isinstance(refs, list):
             errors.append(f"chapters: missing paragraph inventory for {cid}")
@@ -145,12 +147,22 @@ def validate_book_map(project: ManuscriptProject, revision_uid: str, payload: di
         want = [item["stable_id"] for item in original["paragraphs"]]
         if got != want:
             errors.append(f"chapters: paragraph coverage/order mismatch for {cid}")
+        for actual, original_paragraph in zip(refs, original["paragraphs"]):
+            if isinstance(actual, dict) and actual.get("source_order") != original_paragraph["source_order"]:
+                errors.append(f"chapters: paragraph source order mismatch for {cid}")
     if seen_chapters != set(expected_chapters):
         errors.append("chapters: missing or additional chapter IDs")
     rows = project.connection.execute(
         "SELECT stable_id,text FROM paragraphs WHERE revision_uid=?", (revision_uid,)
     )
     paragraph_text = {row["stable_id"]: row["text"] for row in rows}
+    for chapter in chapters:
+        if isinstance(chapter, dict) and isinstance(chapter.get("paragraphs"), list):
+            for item in chapter["paragraphs"]:
+                if isinstance(item, dict) and "text" in item:
+                    text = paragraph_text.get(item.get("stable_id")) if isinstance(item.get("stable_id"), str) else None
+                    if text is None or item["text"] != text:
+                        errors.append("chapters: source paragraph text mismatch")
     records = payload.get("records")
     if not isinstance(records, list):
         errors.append("records: expected a list")
