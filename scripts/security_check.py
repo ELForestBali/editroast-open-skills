@@ -24,6 +24,7 @@ ALLOWED_IMPORTS = {
     "datetime",
     "difflib",
     "book_map",
+    "collections",
     "editorial_board",
     "editroast_core",
     "hashlib",
