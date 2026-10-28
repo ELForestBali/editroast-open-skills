@@ -11,6 +11,7 @@ This document guides **coding agents and human maintainers working on this repos
 - [docs/adr/0003-structural-revision-diff.md](docs/adr/0003-structural-revision-diff.md): conservative structural diff and reconciliation
 - [docs/adr/0004-safe-approval-apply.md](docs/adr/0004-safe-approval-apply.md): author approval, dry-run apply and rollback gates
 - [docs/adr/0005-resumable-run-engine.md](docs/adr/0005-resumable-run-engine.md): durable checkpoints, idempotent retries and verified coverage
+- [docs/adr/0006-portable-project-bundles.md](docs/adr/0006-portable-project-bundles.md): sanitized, integrity-checked project export and recovery
 - [docs/PROVENANCE.md](docs/PROVENANCE.md): preserved historical requirements and exclusions
 - [docs/PRIVACY-SECURITY-LICENSES.md](docs/PRIVACY-SECURITY-LICENSES.md): data boundary and license assumptions
 - [docs/SUBSCRIPTION-CAPACITY-PLANNING.md](docs/SUBSCRIPTION-CAPACITY-PLANNING.md): $20-subscription default, 90k-word planning model, quota-safe execution and benchmark acceptance criteria

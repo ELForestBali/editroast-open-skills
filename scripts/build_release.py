@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 
-VERSION = "2.0.0-alpha.5"
+VERSION = "2.0.0-alpha.6"
 SKILLS = (
     "manuscript-roast",
     "manuscript-proofreading",

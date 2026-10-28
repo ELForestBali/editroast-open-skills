@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.0-alpha.6 — unreleased
+
+- Added ER-015 portable `.editroast` project bundles containing immutable revisions, canonical SQLite state, approvals, findings, applications, and referenced run results.
+- Added manifest SHA-256 verification, archive traversal/size/ratio defenses, format/schema compatibility gates, sanitized service metadata, credential/private-path rejection, and atomic import without overwriting an existing project.
+- Added `bundle export`, `bundle inspect`, and `bundle import` commands plus clean-install round-trip tests that preserve revision and finding IDs and resumable run state.
+
 ## 2.0.0-alpha.5 — unreleased
 
 - Added ER-014 schema-v5 resumable runs with immutable revision-bound plans, chapter or paragraph work units, attempt tokens, and append-only checkpoint history.
