@@ -70,6 +70,60 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("project")
     history.add_argument("revision")
     history.add_argument("--group")
+    correction_add = manuscript_actions.add_parser("correction-add")
+    correction_add.add_argument("project")
+    correction_add.add_argument("revision")
+    correction_add.add_argument("correction")
+    correction_add.add_argument("--paragraph", required=True)
+    correction_add.add_argument("--before", required=True)
+    correction_add.add_argument("--after", required=True)
+    correction_add.add_argument("--class", dest="change_class", choices=("mechanical", "semantic"), required=True)
+    correction_add.add_argument("--start", type=int)
+    correction_add.add_argument("--end", type=int)
+    correction_add.add_argument("--finding")
+    correction_add.add_argument("--correction-group")
+    correction_add.add_argument("--category")
+    correction_add.add_argument("--rationale")
+    correction_add.add_argument("--actor", default="editor")
+    correction_list = manuscript_actions.add_parser("correction-list")
+    correction_list.add_argument("project")
+    correction_list.add_argument("--revision")
+    correction_decide = manuscript_actions.add_parser("correction-decide")
+    correction_decide.add_argument("project")
+    correction_decide.add_argument(
+        "decision", choices=("accept", "approved", "rejected", "deferred", "pending")
+    )
+    correction_scope = correction_decide.add_mutually_exclusive_group(required=True)
+    correction_scope.add_argument("--id", action="append", dest="correction_ids")
+    correction_scope.add_argument("--correction-group")
+    correction_scope.add_argument("--all-mechanical", action="store_true")
+    correction_decide.add_argument("--actor", default="author")
+    correction_decide.add_argument("--rationale")
+    correction_decide.add_argument("--revision")
+    correction_decide.add_argument("--confirm-author-approval", action="store_true")
+    correction_decide.add_argument("--confirm-semantic-group", action="store_true")
+    apply_preview = manuscript_actions.add_parser("apply-preview")
+    apply_preview.add_argument("project")
+    apply_preview.add_argument("revision")
+    apply_preview.add_argument("--id", action="append", dest="correction_ids")
+    apply_command = manuscript_actions.add_parser("apply")
+    apply_command.add_argument("project")
+    apply_command.add_argument("revision")
+    apply_command.add_argument("--plan-hash", required=True)
+    apply_command.add_argument("--id", action="append", dest="correction_ids")
+    apply_command.add_argument("--actor", default="author")
+    apply_command.add_argument("--confirm-author-approval", action="store_true")
+    apply_history = manuscript_actions.add_parser("apply-history")
+    apply_history.add_argument("project")
+    rollback_preview = manuscript_actions.add_parser("rollback-preview")
+    rollback_preview.add_argument("project")
+    rollback_preview.add_argument("application")
+    rollback = manuscript_actions.add_parser("rollback")
+    rollback.add_argument("project")
+    rollback.add_argument("application")
+    rollback.add_argument("--plan-hash", required=True)
+    rollback.add_argument("--actor", default="author")
+    rollback.add_argument("--confirm-author-approval", action="store_true")
     return parser
 
 
@@ -118,6 +172,59 @@ def run(args: argparse.Namespace) -> int:
                 )
             elif args.action == "reconcile-history":
                 payload = project.reconciliation_history(args.revision, args.group)
+            elif args.action == "correction-add":
+                payload = project.add_correction(
+                    args.correction,
+                    args.revision,
+                    paragraph_stable_id=args.paragraph,
+                    exact_before=args.before,
+                    replacement=args.after,
+                    change_class=args.change_class,
+                    start_offset=args.start,
+                    end_offset=args.end,
+                    finding_id=args.finding,
+                    group_uid=args.correction_group,
+                    category=args.category,
+                    rationale=args.rationale,
+                    actor=args.actor,
+                )
+            elif args.action == "correction-list":
+                payload = project.corrections(args.revision)
+            elif args.action == "correction-decide":
+                payload = project.decide_corrections(
+                    "approved" if args.decision == "accept" else args.decision,
+                    correction_ids=args.correction_ids,
+                    group_uid=args.correction_group,
+                    all_mechanical=args.all_mechanical,
+                    revision_uid=args.revision,
+                    actor=args.actor,
+                    rationale=args.rationale,
+                    author_confirmed=args.confirm_author_approval,
+                    confirm_semantic_group=args.confirm_semantic_group,
+                )
+            elif args.action == "apply-preview":
+                payload = project.preview_correction_apply(
+                    args.revision, correction_ids=args.correction_ids
+                )
+            elif args.action == "apply":
+                payload = project.apply_corrections(
+                    args.revision,
+                    plan_hash=args.plan_hash,
+                    correction_ids=args.correction_ids,
+                    actor=args.actor,
+                    author_confirmed=args.confirm_author_approval,
+                )
+            elif args.action == "apply-history":
+                payload = project.application_history()
+            elif args.action == "rollback-preview":
+                payload = project.preview_rollback(args.application)
+            elif args.action == "rollback":
+                payload = project.rollback_application(
+                    args.application,
+                    plan_hash=args.plan_hash,
+                    actor=args.actor,
+                    author_confirmed=args.confirm_author_approval,
+                )
             else:
                 payload = project.verify()
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))

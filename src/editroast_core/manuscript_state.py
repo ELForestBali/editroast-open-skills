@@ -21,9 +21,10 @@ from pathlib import Path, PurePosixPath
 from xml.etree import ElementTree
 
 from .revision_diff import confidence_label, plan_chapter_diff, plan_paragraph_diff, text_similarity
+from .safe_apply import renderability_errors, render_staged_revision
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SUPPORTED_SUFFIXES = {".docx", ".txt", ".md", ".markdown"}
 MAX_ARCHIVE_MEMBERS = 5_000
 MAX_ARCHIVE_UNCOMPRESSED = 256 * 1024 * 1024
@@ -565,6 +566,52 @@ CREATE INDEX IF NOT EXISTS idx_candidates_group ON reconciliation_candidates(gro
 CREATE INDEX IF NOT EXISTS idx_reconciliation_events_group ON reconciliation_events(group_uid,sequence);
 """
 
+MIGRATION_4 = """
+CREATE TABLE IF NOT EXISTS corrections(
+    correction_id TEXT PRIMARY KEY,
+    source_revision_uid TEXT NOT NULL REFERENCES manuscript_revisions(revision_uid),
+    paragraph_stable_id TEXT NOT NULL,
+    finding_id TEXT REFERENCES editorial_findings(finding_id),
+    group_uid TEXT,
+    exact_before TEXT NOT NULL,
+    replacement TEXT NOT NULL,
+    start_offset INTEGER,
+    end_offset INTEGER,
+    change_class TEXT NOT NULL CHECK(change_class IN ('mechanical','semantic')),
+    category TEXT,
+    rationale TEXT,
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','deferred','applied')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS correction_events(
+    sequence INTEGER PRIMARY KEY,
+    event_uid TEXT NOT NULL UNIQUE,
+    correction_id TEXT NOT NULL REFERENCES corrections(correction_id),
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','deferred','applied')),
+    actor TEXT NOT NULL,
+    rationale TEXT,
+    batch_uid TEXT,
+    source_revision_uid TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS change_applications(
+    application_uid TEXT PRIMARY KEY,
+    operation TEXT NOT NULL CHECK(operation IN ('apply','rollback')),
+    source_revision_uid TEXT NOT NULL REFERENCES manuscript_revisions(revision_uid),
+    result_revision_uid TEXT NOT NULL UNIQUE REFERENCES manuscript_revisions(revision_uid),
+    rollback_of_uid TEXT REFERENCES change_applications(application_uid),
+    plan_hash TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL,
+    correction_ids_json TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_corrections_revision ON corrections(source_revision_uid,status);
+CREATE INDEX IF NOT EXISTS idx_correction_events_id ON correction_events(correction_id,sequence);
+CREATE INDEX IF NOT EXISTS idx_applications_source ON change_applications(source_revision_uid,created_at);
+"""
+
 
 def _table_columns(connection: sqlite3.Connection, name: str) -> set[str]:
     return {row[1] for row in connection.execute(f'PRAGMA table_info("{name}")')}
@@ -601,13 +648,28 @@ def _apply_migrations(connection: sqlite3.Connection, root: Path) -> None:
     ).fetchone()
     if migrated_diff:
         connection.executescript(MIGRATION_3)
+    else:
+        connection.executescript("BEGIN;\n" + MIGRATION_3)
+        try:
+            _backfill_revision_diffs(connection)
+            connection.execute(
+                "INSERT INTO schema_migrations(version,name,applied_at) VALUES(3,?,?)",
+                ("structural revision diff and reconciliation", utc_now()),
+            )
+        except Exception:
+            connection.rollback()
+            raise
+    migrated_apply = connection.execute(
+        "SELECT 1 FROM schema_migrations WHERE version=4"
+    ).fetchone()
+    if migrated_apply:
+        connection.executescript(MIGRATION_4)
         return
-    connection.executescript("BEGIN;\n" + MIGRATION_3)
+    connection.executescript("BEGIN;\n" + MIGRATION_4)
     try:
-        _backfill_revision_diffs(connection)
         connection.execute(
-            "INSERT INTO schema_migrations(version,name,applied_at) VALUES(3,?,?)",
-            ("structural revision diff and reconciliation", utc_now()),
+            "INSERT INTO schema_migrations(version,name,applied_at) VALUES(4,?,?)",
+            ("author-approved safe correction application", utc_now()),
         )
     except Exception:
         connection.rollback()
@@ -1099,6 +1161,10 @@ class ManuscriptProject:
         title: str | None = None,
         author: str | None = None,
         language: str | None = None,
+        _source_name: str | None = None,
+        _revision_metadata: dict | None = None,
+        _transaction_hook=None,
+        _expected_parent_uid: str | None = None,
     ) -> dict:
         source_path = Path(source).resolve()
         document, source_hash, source_size = extract_manuscript(source_path)
@@ -1112,6 +1178,10 @@ class ManuscriptProject:
             "SELECT revision_uid FROM manuscript_revisions ORDER BY id DESC LIMIT 1"
         ).fetchone()
         parent_uid = latest[0] if latest else None
+        if _expected_parent_uid is not None and parent_uid != _expected_parent_uid:
+            raise ValueError(
+                f"Source revision is stale: expected latest {_expected_parent_uid}, found {parent_uid}"
+            )
         old_chapters = list(
             self.connection.execute(
                 "SELECT * FROM chapters WHERE revision_uid=? ORDER BY source_order", (parent_uid,)
@@ -1158,6 +1228,15 @@ class ManuscriptProject:
         now = utc_now()
         try:
             with self.connection:
+                current_latest = self.connection.execute(
+                    "SELECT revision_uid FROM manuscript_revisions ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                current_parent_uid = current_latest[0] if current_latest else None
+                if current_parent_uid != parent_uid:
+                    raise ValueError(
+                        f"Latest revision changed during import: expected {parent_uid}, "
+                        f"found {current_parent_uid}"
+                    )
                 self.connection.execute(
                     """INSERT INTO manuscript_revisions(
                         revision_uid,parent_revision_uid,source_name,source_format,source_sha256,
@@ -1165,12 +1244,16 @@ class ManuscriptProject:
                         paragraph_count,chapter_count,warnings_json,metadata_json,status
                     ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
-                        revision_uid, parent_uid, source_path.name, document.format, source_hash,
+                        revision_uid, parent_uid, _source_name or source_path.name, document.format, source_hash,
                         source_size, snapshot_rel.as_posix(), now, resolved_title, resolved_author,
                         resolved_language,
                         document.content_map_hash, len(document.paragraphs), len(document.chapters),
                         json.dumps(document.warnings, ensure_ascii=False),
-                        json.dumps(document.metadata, ensure_ascii=False, sort_keys=True), "ready",
+                        json.dumps(
+                            {**document.metadata, **(_revision_metadata or {})},
+                            ensure_ascii=False, sort_keys=True,
+                        ),
+                        "ready",
                     ),
                 )
                 for chapter, (chapter_id, status) in zip(document.chapters, chapter_reconciliation):
@@ -1230,6 +1313,8 @@ class ManuscriptProject:
                     "UPDATE projects SET updated_at=?,title=?,author=?,language=?",
                     (now, resolved_title, resolved_author, resolved_language),
                 )
+                if _transaction_hook is not None:
+                    _transaction_hook(revision_uid, now)
                 self.connection.execute(
                     "INSERT INTO audit_log(event_type,revision_uid,payload_json,created_at) VALUES(?,?,?,?)",
                     (
@@ -1333,6 +1418,674 @@ class ManuscriptProject:
                     recommendation, status_value, utc_now(),
                 ),
             )
+
+    def add_correction(
+        self,
+        correction_id: str,
+        revision_uid: str,
+        *,
+        paragraph_stable_id: str,
+        exact_before: str,
+        replacement: str,
+        change_class: str,
+        start_offset: int | None = None,
+        end_offset: int | None = None,
+        finding_id: str | None = None,
+        group_uid: str | None = None,
+        category: str | None = None,
+        rationale: str | None = None,
+        actor: str = "editor",
+    ) -> dict:
+        if not correction_id.strip():
+            raise ValueError("Correction ID is required")
+        if change_class not in {"mechanical", "semantic"}:
+            raise ValueError("Correction class must be mechanical or semantic")
+        if not exact_before:
+            raise ValueError("Correction before text cannot be empty")
+        if exact_before == replacement:
+            raise ValueError("Correction replacement must differ from before text")
+        if not actor.strip():
+            raise ValueError("Correction actor is required")
+        paragraph = self.connection.execute(
+            """SELECT * FROM paragraphs
+               WHERE revision_uid=? AND stable_id=?""",
+            (revision_uid, paragraph_stable_id),
+        ).fetchone()
+        if not paragraph:
+            raise ValueError(
+                f"Paragraph {paragraph_stable_id} does not belong to revision {revision_uid}"
+            )
+        if (start_offset is None) != (end_offset is None):
+            raise ValueError("Both start and end offsets are required together")
+        if start_offset is None:
+            starts: list[int] = []
+            cursor = 0
+            while True:
+                cursor = paragraph["text"].find(exact_before, cursor)
+                if cursor < 0:
+                    break
+                starts.append(cursor)
+                cursor += 1
+            if len(starts) != 1:
+                raise ValueError(
+                    f"Exact before text occurs {len(starts)} times in paragraph; provide an unambiguous span"
+                )
+            start_offset = starts[0]
+            end_offset = start_offset + len(exact_before)
+        if start_offset < 0 or end_offset < start_offset:
+            raise ValueError("Correction offsets are invalid")
+        if paragraph["text"][start_offset:end_offset] != exact_before:
+            raise ValueError("Correction offsets do not match the exact before text")
+        if finding_id:
+            finding = self.connection.execute(
+                "SELECT source_revision_uid FROM editorial_findings WHERE finding_id=?",
+                (finding_id,),
+            ).fetchone()
+            if not finding or finding[0] != revision_uid:
+                raise ValueError("Correction finding must belong to the same source revision")
+        now = utc_now()
+        event_uid = stable_id("ce")
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO corrections(
+                    correction_id,source_revision_uid,paragraph_stable_id,finding_id,group_uid,
+                    exact_before,replacement,start_offset,end_offset,change_class,category,
+                    rationale,status,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    correction_id, revision_uid, paragraph_stable_id, finding_id, group_uid,
+                    exact_before, replacement, start_offset, end_offset, change_class, category,
+                    rationale, "pending", now, now,
+                ),
+            )
+            self.connection.execute(
+                """INSERT INTO correction_events(
+                    event_uid,correction_id,status,actor,rationale,batch_uid,
+                    source_revision_uid,created_at
+                ) VALUES(?,?,?,?,?,?,?,?)""",
+                (event_uid, correction_id, "pending", actor, rationale, None, revision_uid, now),
+            )
+        return self.correction(correction_id)
+
+    def correction(self, correction_id: str) -> dict:
+        row = self.connection.execute(
+            "SELECT * FROM corrections WHERE correction_id=?", (correction_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Unknown correction: {correction_id}")
+        payload = dict(row)
+        payload["history"] = [
+            dict(event) for event in self.connection.execute(
+                """SELECT * FROM correction_events WHERE correction_id=?
+                   ORDER BY sequence""",
+                (correction_id,),
+            )
+        ]
+        return payload
+
+    def corrections(self, revision_uid: str | None = None) -> list[dict]:
+        if revision_uid:
+            rows = self.connection.execute(
+                """SELECT correction_id FROM corrections
+                   WHERE source_revision_uid=? ORDER BY correction_id""",
+                (revision_uid,),
+            )
+        else:
+            rows = self.connection.execute(
+                "SELECT correction_id FROM corrections ORDER BY created_at,correction_id"
+            )
+        return [self.correction(row[0]) for row in rows]
+
+    def decide_corrections(
+        self,
+        decision: str,
+        *,
+        correction_ids: list[str] | None = None,
+        group_uid: str | None = None,
+        all_mechanical: bool = False,
+        revision_uid: str | None = None,
+        actor: str = "author",
+        rationale: str | None = None,
+        author_confirmed: bool = False,
+        confirm_semantic_group: bool = False,
+    ) -> list[dict]:
+        if decision not in {"pending", "approved", "rejected", "deferred"}:
+            raise ValueError(f"Unsupported correction decision: {decision}")
+        if not actor.strip():
+            raise ValueError("Correction decision actor is required")
+        selectors = int(bool(correction_ids)) + int(bool(group_uid)) + int(all_mechanical)
+        if selectors != 1:
+            raise ValueError("Select correction IDs, one group, or all pending mechanical corrections")
+        if correction_ids:
+            selected_ids = list(dict.fromkeys(correction_ids))
+            placeholders = ",".join("?" for _ in selected_ids)
+            rows = self.connection.execute(
+                f"SELECT * FROM corrections WHERE correction_id IN ({placeholders})",
+                selected_ids,
+            ).fetchall()
+            found = {row["correction_id"] for row in rows}
+            missing = sorted(set(selected_ids) - found)
+            if missing:
+                raise ValueError(f"Unknown corrections: {missing}")
+        elif group_uid:
+            if revision_uid:
+                rows = self.connection.execute(
+                    """SELECT * FROM corrections
+                       WHERE group_uid=? AND source_revision_uid=? ORDER BY correction_id""",
+                    (group_uid, revision_uid),
+                ).fetchall()
+            else:
+                rows = self.connection.execute(
+                    "SELECT * FROM corrections WHERE group_uid=? ORDER BY correction_id",
+                    (group_uid,),
+                ).fetchall()
+        else:
+            if not revision_uid:
+                raise ValueError("A source revision is required for all-mechanical approval")
+            rows = self.connection.execute(
+                """SELECT * FROM corrections
+                   WHERE source_revision_uid=? AND change_class='mechanical' AND status='pending'
+                   ORDER BY correction_id""",
+                (revision_uid,),
+            ).fetchall()
+        if not rows:
+            raise ValueError("No corrections matched the decision scope")
+        source_revisions = {row["source_revision_uid"] for row in rows}
+        if len(source_revisions) != 1:
+            raise ValueError("A correction decision batch cannot span source revisions")
+        if any(row["status"] == "applied" for row in rows):
+            raise ValueError("Applied correction decisions are immutable")
+        if decision == "approved" and all_mechanical:
+            unresolved_by_revision: dict[str, set[str]] = {}
+            for row in rows:
+                if row["source_revision_uid"] not in unresolved_by_revision:
+                    unresolved_by_revision[row["source_revision_uid"]] = {
+                        member["stable_id"]
+                        for group in self.reconciliation_queue(row["source_revision_uid"])
+                        if group["entity_type"] == "paragraph"
+                        for member in group["members"] if member["side"] == "after"
+                    }
+                if row["paragraph_stable_id"] in unresolved_by_revision[row["source_revision_uid"]]:
+                    raise ValueError(
+                        "Batch mechanical approval includes an ambiguous target: "
+                        f"{row['correction_id']}"
+                    )
+        semantic = [row["correction_id"] for row in rows if row["change_class"] == "semantic"]
+        if decision == "approved" and not author_confirmed:
+            raise ValueError("Explicit author approval confirmation is required")
+        if decision == "approved" and semantic and (group_uid or len(semantic) > 1):
+            if not confirm_semantic_group:
+                raise ValueError(
+                    "Semantic group approval requires explicit semantic-group confirmation"
+                )
+        now = utc_now()
+        batch_uid = stable_id("batch")
+        with self.connection:
+            for row in sorted(rows, key=lambda item: item["correction_id"]):
+                self.connection.execute(
+                    "UPDATE corrections SET status=?,updated_at=? WHERE correction_id=?",
+                    (decision, now, row["correction_id"]),
+                )
+                self.connection.execute(
+                    """INSERT INTO correction_events(
+                        event_uid,correction_id,status,actor,rationale,batch_uid,
+                        source_revision_uid,created_at
+                    ) VALUES(?,?,?,?,?,?,?,?)""",
+                    (
+                        stable_id("ce"), row["correction_id"], decision, actor, rationale,
+                        batch_uid, row["source_revision_uid"], now,
+                    ),
+                )
+        return [self.correction(row["correction_id"]) for row in rows]
+
+    def _correction_rows(
+        self, revision_uid: str, correction_ids: list[str] | None
+    ) -> list[sqlite3.Row]:
+        if correction_ids is None:
+            return self.connection.execute(
+                """SELECT * FROM corrections
+                   WHERE source_revision_uid=? AND status='approved'
+                   ORDER BY correction_id""",
+                (revision_uid,),
+            ).fetchall()
+        selected_ids = list(dict.fromkeys(correction_ids))
+        if not selected_ids:
+            return []
+        placeholders = ",".join("?" for _ in selected_ids)
+        rows = self.connection.execute(
+            f"SELECT * FROM corrections WHERE correction_id IN ({placeholders})",
+            selected_ids,
+        ).fetchall()
+        found = {row["correction_id"] for row in rows}
+        missing = sorted(set(selected_ids) - found)
+        if missing:
+            raise ValueError(f"Unknown corrections: {missing}")
+        return sorted(rows, key=lambda row: row["correction_id"])
+
+    def preview_correction_apply(
+        self, revision_uid: str, *, correction_ids: list[str] | None = None
+    ) -> dict:
+        revision = self.connection.execute(
+            "SELECT * FROM manuscript_revisions WHERE revision_uid=?", (revision_uid,)
+        ).fetchone()
+        if not revision:
+            raise ValueError(f"Unknown revision: {revision_uid}")
+        blockers: list[dict] = []
+
+        def block(code: str, message: str, correction_id: str | None = None) -> None:
+            item = {"code": code, "message": message}
+            if correction_id:
+                item["correction_id"] = correction_id
+            blockers.append(item)
+
+        latest = self.connection.execute(
+            "SELECT revision_uid FROM manuscript_revisions ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        if latest != revision_uid:
+            block(
+                "source_not_latest",
+                f"Source revision {revision_uid} is stale; latest revision is {latest}",
+            )
+        snapshot = self.root / revision["snapshot_path"]
+        if not snapshot.is_file():
+            block("source_missing", f"Source snapshot is missing: {revision['snapshot_path']}")
+        else:
+            actual_hash = sha256_file(snapshot)
+            if actual_hash != revision["source_sha256"]:
+                block("source_hash_mismatch", "Source snapshot SHA-256 no longer matches the revision")
+            try:
+                document, _, source_size = extract_manuscript(snapshot)
+                if source_size != revision["source_size"]:
+                    block("source_size_mismatch", "Source snapshot size no longer matches the revision")
+                if document.content_map_hash != revision["content_map_hash"]:
+                    block("source_map_mismatch", "Source structured content map no longer matches")
+            except (ValueError, OSError) as error:
+                block("source_invalid", str(error))
+        rows = self._correction_rows(revision_uid, correction_ids)
+        if not rows:
+            block("no_approved_corrections", "No approved corrections were selected")
+        unresolved_ids = {
+            member["stable_id"]
+            for group in self.reconciliation_queue(revision_uid)
+            if group["entity_type"] == "paragraph"
+            for member in group["members"] if member["side"] == "after"
+        }
+        patches: list[dict] = []
+        for row in rows:
+            correction_id = row["correction_id"]
+            if row["source_revision_uid"] != revision_uid:
+                block(
+                    "wrong_source_revision",
+                    f"Correction belongs to {row['source_revision_uid']}, not {revision_uid}",
+                    correction_id,
+                )
+                continue
+            if row["status"] != "approved":
+                block(
+                    "not_approved", f"Correction status is {row['status']}", correction_id
+                )
+            paragraph = self.connection.execute(
+                """SELECT * FROM paragraphs
+                   WHERE revision_uid=? AND stable_id=?""",
+                (revision_uid, row["paragraph_stable_id"]),
+            ).fetchone()
+            if not paragraph:
+                block("paragraph_missing", "Target paragraph is missing", correction_id)
+                continue
+            if row["paragraph_stable_id"] in unresolved_ids:
+                block(
+                    "ambiguous_reconciliation",
+                    "Target paragraph still requires reconciliation",
+                    correction_id,
+                )
+            start = row["start_offset"]
+            end = row["end_offset"]
+            if start is None or end is None or paragraph["text"][start:end] != row["exact_before"]:
+                block(
+                    "exact_span_mismatch",
+                    "Exact before text no longer matches the stored paragraph span",
+                    correction_id,
+                )
+                continue
+            patches.append(
+                {
+                    "correction_id": correction_id,
+                    "paragraph_stable_id": row["paragraph_stable_id"],
+                    "source_order": paragraph["source_order"],
+                    "start": start,
+                    "end": end,
+                    "before": row["exact_before"],
+                    "after": row["replacement"],
+                    "change_class": row["change_class"],
+                    "status": row["status"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+        by_paragraph: dict[str, list[dict]] = {}
+        for patch in patches:
+            by_paragraph.setdefault(patch["paragraph_stable_id"], []).append(patch)
+        for paragraph_id, values in by_paragraph.items():
+            ordered = sorted(values, key=lambda item: (item["start"], item["end"], item["correction_id"]))
+            for left, right in zip(ordered, ordered[1:]):
+                if right["start"] < left["end"]:
+                    message = (
+                        f"Corrections {left['correction_id']} and {right['correction_id']} "
+                        f"overlap in paragraph {paragraph_id}"
+                    )
+                    block("overlapping_corrections", message, left["correction_id"])
+                    block("overlapping_corrections", message, right["correction_id"])
+        if snapshot.is_file() and revision["source_format"] in {"docx", "text", "markdown"}:
+            for message in renderability_errors(snapshot, revision["source_format"], patches):
+                block("formatting_collision", message)
+        elif revision["source_format"] not in {"docx", "text", "markdown"}:
+            block(
+                "unsupported_format",
+                f"Safe apply is not supported for {revision['source_format']}",
+            )
+        canonical = {
+            "source_revision_uid": revision_uid,
+            "source_sha256": revision["source_sha256"],
+            "source_content_map_hash": revision["content_map_hash"],
+            "patches": sorted(
+                patches, key=lambda item: (item["source_order"], item["start"], item["correction_id"])
+            ),
+        }
+        plan_hash = sha256_bytes(
+            json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        return {
+            "mode": "dry-run",
+            "ready": not blockers,
+            "plan_hash": plan_hash,
+            "source_revision_uid": revision_uid,
+            "source_sha256": revision["source_sha256"],
+            "correction_ids": [patch["correction_id"] for patch in canonical["patches"]],
+            "patches": canonical["patches"],
+            "blockers": sorted(
+                blockers,
+                key=lambda item: (item["code"], item.get("correction_id", ""), item["message"]),
+            ),
+            "notice": "Preview only; no file or revision was changed.",
+        }
+
+    def apply_corrections(
+        self,
+        revision_uid: str,
+        *,
+        plan_hash: str,
+        correction_ids: list[str] | None = None,
+        actor: str = "author",
+        author_confirmed: bool = False,
+    ) -> dict:
+        if not author_confirmed:
+            raise ValueError("Explicit author apply confirmation is required")
+        if not actor.strip():
+            raise ValueError("Apply actor is required")
+        preview = self.preview_correction_apply(revision_uid, correction_ids=correction_ids)
+        if not preview["ready"]:
+            raise ValueError(
+                "Apply is blocked: " + "; ".join(item["message"] for item in preview["blockers"])
+            )
+        if plan_hash != preview["plan_hash"]:
+            raise ValueError("Apply plan hash changed; run a new preview and approve that exact plan")
+        revision = self.connection.execute(
+            "SELECT * FROM manuscript_revisions WHERE revision_uid=?", (revision_uid,)
+        ).fetchone()
+        snapshot = self.root / revision["snapshot_path"]
+        suffix = Path(revision["source_name"]).suffix or f".{revision['source_format']}"
+        stage = self.root / ".staging" / f"apply-{uuid.uuid4().hex}{suffix}"
+        application_uid = stable_id("apply")
+        correction_id_values = preview["correction_ids"]
+        try:
+            render_staged_revision(snapshot, stage, revision["source_format"], preview["patches"])
+            rendered, _, _ = extract_manuscript(stage)
+            source_rows = self.connection.execute(
+                "SELECT source_order,text FROM paragraphs WHERE revision_uid=? ORDER BY source_order",
+                (revision_uid,),
+            ).fetchall()
+            expected = {row["source_order"]: row["text"] for row in source_rows}
+            for patch in sorted(preview["patches"], key=lambda item: item["start"], reverse=True):
+                text = expected[patch["source_order"]]
+                if text[patch["start"]:patch["end"]] != patch["before"]:
+                    raise ValueError(
+                        f"Exact source span changed for correction {patch['correction_id']}"
+                    )
+                expected[patch["source_order"]] = (
+                    text[:patch["start"]] + patch["after"] + text[patch["end"]:]
+                )
+            actual = {paragraph.source_order: paragraph.text for paragraph in rendered.paragraphs}
+            if actual != expected:
+                raise ValueError("Rendered manuscript verification failed; no revision was committed")
+
+            def commit_application(result_revision_uid: str, created_at: str) -> None:
+                self.connection.execute(
+                    """INSERT INTO change_applications(
+                        application_uid,operation,source_revision_uid,result_revision_uid,
+                        rollback_of_uid,plan_hash,source_sha256,correction_ids_json,actor,created_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        application_uid, "apply", revision_uid, result_revision_uid, None,
+                        plan_hash, revision["source_sha256"],
+                        json.dumps(correction_id_values, ensure_ascii=False), actor, created_at,
+                    ),
+                )
+                for correction_id in correction_id_values:
+                    updated = self.connection.execute(
+                        """UPDATE corrections SET status='applied',updated_at=?
+                           WHERE correction_id=? AND status='approved'""",
+                        (created_at, correction_id),
+                    )
+                    if updated.rowcount != 1:
+                        raise ValueError(
+                            f"Correction approval changed during apply: {correction_id}"
+                        )
+                    self.connection.execute(
+                        """INSERT INTO correction_events(
+                            event_uid,correction_id,status,actor,rationale,batch_uid,
+                            source_revision_uid,created_at
+                        ) VALUES(?,?,?,?,?,?,?,?)""",
+                        (
+                            stable_id("ce"), correction_id, "applied", actor,
+                            f"Applied by {application_uid}", application_uid, revision_uid, created_at,
+                        ),
+                    )
+                self.connection.execute(
+                    "INSERT INTO audit_log(event_type,revision_uid,payload_json,created_at) VALUES(?,?,?,?)",
+                    (
+                        "corrections.applied", result_revision_uid,
+                        json.dumps({
+                            "application_uid": application_uid,
+                            "source_revision_uid": revision_uid,
+                            "plan_hash": plan_hash,
+                            "correction_ids": correction_id_values,
+                            "actor": actor,
+                        }, ensure_ascii=False, sort_keys=True),
+                        created_at,
+                    ),
+                )
+
+            source_name = Path(revision["source_name"])
+            output_name = f"{source_name.stem}.editroast{suffix}"
+            result = self.import_manuscript(
+                stage,
+                _source_name=output_name,
+                _revision_metadata={
+                    "generated_by": "safe_apply",
+                    "application_uid": application_uid,
+                    "plan_hash": plan_hash,
+                    "source_revision_uid": revision_uid,
+                },
+                _transaction_hook=commit_application,
+                _expected_parent_uid=revision_uid,
+            )
+        finally:
+            stage.unlink(missing_ok=True)
+        return {
+            "application_uid": application_uid,
+            "operation": "apply",
+            "source_revision_uid": revision_uid,
+            "result_revision_uid": result["revision_uid"],
+            "result_snapshot": result["snapshot"],
+            "plan_hash": plan_hash,
+            "correction_ids": correction_id_values,
+        }
+
+    def preview_rollback(self, application_uid: str) -> dict:
+        application = self.connection.execute(
+            "SELECT * FROM change_applications WHERE application_uid=?", (application_uid,)
+        ).fetchone()
+        if not application or application["operation"] != "apply":
+            raise ValueError(f"Unknown apply operation: {application_uid}")
+        blockers: list[dict] = []
+        latest = self.connection.execute(
+            "SELECT revision_uid FROM manuscript_revisions ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        if latest != application["result_revision_uid"]:
+            blockers.append({
+                "code": "result_not_latest",
+                "message": (
+                    f"Applied revision {application['result_revision_uid']} is not latest; "
+                    f"current latest is {latest}"
+                ),
+            })
+        source_revision = self.connection.execute(
+            "SELECT * FROM manuscript_revisions WHERE revision_uid=?",
+            (application["source_revision_uid"],),
+        ).fetchone()
+        result_revision = self.connection.execute(
+            "SELECT * FROM manuscript_revisions WHERE revision_uid=?",
+            (application["result_revision_uid"],),
+        ).fetchone()
+        for label, revision in (("rollback_source", source_revision), ("applied_result", result_revision)):
+            path = self.root / revision["snapshot_path"]
+            if not path.is_file() or sha256_file(path) != revision["source_sha256"]:
+                blockers.append({
+                    "code": f"{label}_integrity",
+                    "message": f"{label.replace('_', ' ')} snapshot failed SHA-256 verification",
+                })
+        canonical = {
+            "operation": "rollback",
+            "application_uid": application_uid,
+            "source_revision_uid": application["source_revision_uid"],
+            "applied_revision_uid": application["result_revision_uid"],
+            "restore_sha256": source_revision["source_sha256"],
+            "applied_sha256": result_revision["source_sha256"],
+        }
+        plan_hash = sha256_bytes(
+            json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        return {
+            **canonical,
+            "mode": "dry-run",
+            "ready": not blockers,
+            "plan_hash": plan_hash,
+            "blockers": blockers,
+            "notice": "Rollback preview only; rollback creates another immutable revision.",
+        }
+
+    def rollback_application(
+        self,
+        application_uid: str,
+        *,
+        plan_hash: str,
+        actor: str = "author",
+        author_confirmed: bool = False,
+    ) -> dict:
+        if not author_confirmed:
+            raise ValueError("Explicit author rollback confirmation is required")
+        if not actor.strip():
+            raise ValueError("Rollback actor is required")
+        preview = self.preview_rollback(application_uid)
+        if not preview["ready"]:
+            raise ValueError(
+                "Rollback is blocked: "
+                + "; ".join(item["message"] for item in preview["blockers"])
+            )
+        if plan_hash != preview["plan_hash"]:
+            raise ValueError("Rollback plan hash changed; run a new preview")
+        application = self.connection.execute(
+            "SELECT * FROM change_applications WHERE application_uid=?", (application_uid,)
+        ).fetchone()
+        applied_result = self.connection.execute(
+            "SELECT * FROM manuscript_revisions WHERE revision_uid=?",
+            (application["result_revision_uid"],),
+        ).fetchone()
+        source_revision = self.connection.execute(
+            "SELECT * FROM manuscript_revisions WHERE revision_uid=?",
+            (application["source_revision_uid"],),
+        ).fetchone()
+        source = self.root / source_revision["snapshot_path"]
+        suffix = Path(source_revision["source_name"]).suffix or f".{source_revision['source_format']}"
+        stage = self.root / ".staging" / f"rollback-{uuid.uuid4().hex}{suffix}"
+        rollback_uid = stable_id("rollback")
+        try:
+            with source.open("rb") as source_handle, stage.open("wb") as target_handle:
+                shutil.copyfileobj(source_handle, target_handle, length=1024 * 1024)
+                target_handle.flush()
+                os.fsync(target_handle.fileno())
+
+            def commit_rollback(result_revision_uid: str, created_at: str) -> None:
+                self.connection.execute(
+                    """INSERT INTO change_applications(
+                        application_uid,operation,source_revision_uid,result_revision_uid,
+                        rollback_of_uid,plan_hash,source_sha256,correction_ids_json,actor,created_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        rollback_uid, "rollback", application["result_revision_uid"],
+                        result_revision_uid, application_uid, plan_hash,
+                        applied_result["source_sha256"], application["correction_ids_json"],
+                        actor, created_at,
+                    ),
+                )
+                self.connection.execute(
+                    "INSERT INTO audit_log(event_type,revision_uid,payload_json,created_at) VALUES(?,?,?,?)",
+                    (
+                        "corrections.rolled_back", result_revision_uid,
+                        json.dumps({
+                            "rollback_uid": rollback_uid,
+                            "rollback_of_uid": application_uid,
+                            "restored_revision_uid": application["source_revision_uid"],
+                            "actor": actor,
+                        }, ensure_ascii=False, sort_keys=True),
+                        created_at,
+                    ),
+                )
+
+            source_name = Path(source_revision["source_name"])
+            result = self.import_manuscript(
+                stage,
+                _source_name=f"{source_name.stem}.rollback{suffix}",
+                _revision_metadata={
+                    "generated_by": "safe_rollback",
+                    "rollback_uid": rollback_uid,
+                    "rollback_of_uid": application_uid,
+                    "restored_revision_uid": application["source_revision_uid"],
+                    "plan_hash": plan_hash,
+                },
+                _transaction_hook=commit_rollback,
+                _expected_parent_uid=application["result_revision_uid"],
+            )
+        finally:
+            stage.unlink(missing_ok=True)
+        return {
+            "application_uid": rollback_uid,
+            "operation": "rollback",
+            "rollback_of_uid": application_uid,
+            "source_revision_uid": application["result_revision_uid"],
+            "result_revision_uid": result["revision_uid"],
+            "result_snapshot": result["snapshot"],
+            "plan_hash": plan_hash,
+        }
+
+    def application_history(self) -> list[dict]:
+        history = []
+        for row in self.connection.execute(
+            "SELECT * FROM change_applications ORDER BY created_at,application_uid"
+        ):
+            item = dict(row)
+            item["correction_ids"] = json.loads(item.pop("correction_ids_json"))
+            history.append(item)
+        return history
 
     def revision(self, revision_uid: str) -> dict:
         row = self.connection.execute(
@@ -1738,6 +2491,15 @@ class ManuscriptProject:
                        AND e.action='resolve'
                    )"""
             ).fetchone()[0],
+            "correction_counts": {
+                row[0]: row[1]
+                for row in self.connection.execute(
+                    "SELECT status,COUNT(*) FROM corrections GROUP BY status"
+                )
+            },
+            "application_count": self.connection.execute(
+                "SELECT COUNT(*) FROM change_applications"
+            ).fetchone()[0],
         }
 
     def verify(self) -> dict:
@@ -1765,6 +2527,22 @@ class ManuscriptProject:
                 issues.append("paragraph completeness mismatch")
             if actual_chapters != revision["chapter_count"]:
                 issues.append("chapter completeness mismatch")
+            for correction in self.connection.execute(
+                "SELECT * FROM corrections WHERE source_revision_uid=?",
+                (revision["revision_uid"],),
+            ):
+                paragraph = self.connection.execute(
+                    """SELECT text FROM paragraphs
+                       WHERE revision_uid=? AND stable_id=?""",
+                    (revision["revision_uid"], correction["paragraph_stable_id"]),
+                ).fetchone()
+                if not paragraph:
+                    issues.append(f"correction target missing: {correction['correction_id']}")
+                    continue
+                start = correction["start_offset"]
+                end = correction["end_offset"]
+                if start is None or end is None or paragraph[0][start:end] != correction["exact_before"]:
+                    issues.append(f"correction exact span mismatch: {correction['correction_id']}")
             for entity_type, table in (("paragraph", "paragraphs"), ("chapter", "chapters")):
                 expected_after = {
                     row[0] for row in self.connection.execute(
@@ -1833,6 +2611,19 @@ class ManuscriptProject:
                 )
                 if actual_map_hash != revision["content_map_hash"]:
                     issues.append("structured content-map hash mismatch")
+            application = self.connection.execute(
+                "SELECT * FROM change_applications WHERE result_revision_uid=?",
+                (revision["revision_uid"],),
+            ).fetchone()
+            if application:
+                if revision["parent_revision_uid"] != application["source_revision_uid"]:
+                    issues.append("application parent revision mismatch")
+                application_source = self.connection.execute(
+                    "SELECT source_sha256 FROM manuscript_revisions WHERE revision_uid=?",
+                    (application["source_revision_uid"],),
+                ).fetchone()
+                if not application_source or application_source[0] != application["source_sha256"]:
+                    issues.append("application source SHA-256 mismatch")
             results.append({"revision_uid": revision["revision_uid"], "ok": not issues, "issues": issues})
         integrity = self.connection.execute("PRAGMA integrity_check").fetchone()[0]
         return {"ok": integrity == "ok" and all(item["ok"] for item in results), "database": integrity, "revisions": results}
