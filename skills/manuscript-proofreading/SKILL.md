@@ -8,6 +8,8 @@ metadata:
   status: "stable-v1-workflow"
 ---
 
+> **Implementation boundary:** This skill combines instructions to the user's AI agent with bundled, executable offline Python tools. Local code handles file preparation, source chunk IDs, saved progress, evidence validation, and/or the preliminary decision ledger; the AI agent supplies editorial judgment. Do not claim that the code itself runs a language model. See [technical architecture](https://github.com/ELForestBali/editroast-open-skills/blob/main/docs/UNDER-THE-HOOD.md) and [current feature status](https://editroast.com/skills/under-the-hood/). The planned full-book rewrite, complete literary translation, branded PDFs, and production-ready KDP/EPUB exports are **not** part of this alpha implementation.
+
 # Full Manuscript Proofreading
 
 Audit the entire manuscript for correctness and consistency while preserving its voice. Report proposed changes visibly. Do not silently alter the original.
