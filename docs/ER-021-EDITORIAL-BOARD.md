@@ -112,11 +112,88 @@ This workflow processes **manuscript text as untrusted source data**.
 Use `--include-text` only when passing source passages to your explicitly
 authorized agent. Outputs and archives contain private manuscript information.
 
+### Chief Sterling adjudication (ER-021 S3)
+
+Only after `editorial preview` confirms **all three independent lens runs**
+have completed and their evidence is intact, an authorized editorial agent may
+prepare a separate, explicit board decision. Source-root grouping and literary
+verdicts are supplied by that agent; the offline Core does not generate them.
+
+```bash
+python scripts/editroast.py editorial adjudicate ./my-book map-run-01 editorial-01 --decisions ./chair-decision.json
+```
+
+Decision schema v1 (example assumes the editor previews contain roots `hook`
+and `pov`; replace IDs with exact values from your own preview):
+
+```json
+{
+  "schema_version": 1,
+  "map_run_id": "map-run-01",
+  "review_id": "editorial-01",
+  "revision_uid": "<same source revision>",
+  "source_sha256": "<same immutable source SHA>",
+  "chair_persona_id": "editorial_board",
+  "verdict": {
+    "classification": "revision_recommended",
+    "summary": "An editorial board recommendation.",
+    "rationale": "A source-grounded explanation, not a human credential."
+  },
+  "groups": [
+    {
+      "canonical_id": "hook",
+      "source_root_cause_ids": ["hook"],
+      "disposition": "revise",
+      "category": "subjective",
+      "assessment": "What the editor concludes from the manuscript.",
+      "rationale": "Why this issue merits attention.",
+      "recommendation": "A proposed change requiring author approval.",
+      "dissent_resolution": "If different lenses disagree, acknowledge both views.",
+      "depends_on": ["pov"],
+      "conflicts_with": []
+    },
+    {
+      "canonical_id": "pov",
+      "source_root_cause_ids": ["pov"],
+      "disposition": "monitor",
+      "category": "mixed",
+      "assessment": "Potentially deliberate POV change.",
+      "rationale": "The ambiguity remains visible.",
+      "recommendation": "",
+      "depends_on": [],
+      "conflicts_with": []
+    }
+  ]
+}
+```
+
+Allowed dispositions: `revise`, `preserve_intent`, `monitor`,
+`needs_author_decision`, `no_action`. Each root from the validated
+preview must appear **exactly once**, with no unknown roots, duplicates,
+dangling dependency IDs or dependency cycles. Explicitly grouping multiple
+source roots requires a nonempty `merge_rationale`; the engine never
+automatically equates semantically similar observations. A strength and a
+concern in the same root require a `dissent_resolution` explanation.
+
+Findings and exact source anchors survive into the output. One correction
+entry is produced per adjudicated revision/author-decision group, and its
+dependencies are ordered before it. Each entry remains
+`author_decision_status=pending`, `applied=false` and
+`er013_plan_created=false`. The operation makes **no DB changes** and
+does not call the ER-013 safe-apply path. The result is a validated decision
+prepared by an agent, *not* an independently measured high-quality editorial
+judgment, author approval, or an EPUB/PDF report.
+
+The next stage must persist a source-bound board decision with audit history,
+allow author consent and ER-013 safe-apply only through explicit separate
+gates, and implement the comparative Board Re-check across reconciled
+manuscript revisions.
+
 ### Work remaining before ER-021 is complete
 
 1. Detailed lens-specific instructions and independent human editorial-quality acceptance for the existing ER-014-backed chapter runs.
-2. Explicit editorial-board adjudication and cross-lens semantic root-cause
-   reconciliation, with inspectable disagreements and a final verdict.
+2. Auditable persistence of explicit board adjudication and deeper agent-led
+   semantic review, with inspectable evidence and disagreements.
 3. Single actionable correction list integrated with author approvals,
    dependency/conflict resolution and ER-013's preview/apply gates.
 4. One comparative Board Re-check on a revised manuscript, using verified
