@@ -7,6 +7,7 @@ import json
 import sqlite3
 
 from .manuscript_state import ManuscriptProject
+from .book_map import inventory_book, read_book_map, validate_book_map
 from .project_bundle import (
     export_project_bundle,
     import_project_bundle,
@@ -175,6 +176,17 @@ def build_parser() -> argparse.ArgumentParser:
     run_checkpoint.add_argument("--reason")
     run_checkpoint.add_argument("--actor", default="agent")
 
+    book_map = groups.add_parser("book-map")
+    book_map_actions = book_map.add_subparsers(dest="action", required=True)
+    book_inventory = book_map_actions.add_parser("inventory")
+    book_inventory.add_argument("project")
+    book_inventory.add_argument("revision")
+    book_inventory.add_argument("--include-text", action="store_true")
+    book_validate = book_map_actions.add_parser("validate")
+    book_validate.add_argument("project")
+    book_validate.add_argument("revision")
+    book_validate.add_argument("--map", dest="map_file", required=True)
+
     bundle_group = groups.add_parser("bundle")
     bundle_actions = bundle_group.add_subparsers(dest="action", required=True)
     bundle_export = bundle_actions.add_parser("export")
@@ -203,7 +215,11 @@ def run(args: argparse.Namespace) -> int:
             payload = project.status()
     else:
         with ManuscriptProject.open(args.project) as project:
-            if args.group == "run" and args.action == "create":
+            if args.group == "book-map" and args.action == "inventory":
+                payload = inventory_book(project, args.revision, include_text=args.include_text)
+            elif args.group == "book-map" and args.action == "validate":
+                payload = validate_book_map(project, args.revision, read_book_map(args.map_file))
+            elif args.group == "run" and args.action == "create":
                 payload = project.create_run(
                     args.run_id,
                     args.revision,
@@ -336,7 +352,7 @@ def run(args: argparse.Namespace) -> int:
             else:
                 payload = project.verify()
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
-    verification = args.action == "verify" and args.group in {"manuscript", "run"}
+    verification = (args.action == "verify" and args.group in {"manuscript", "run"}) or (args.group == "book-map" and args.action == "validate")
     return 2 if verification and not payload["ok"] else 0
 
 
