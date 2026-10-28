@@ -16,6 +16,7 @@ from editroast_core.book_map import (
     advance_book_map, claim_book_map_unit, complete_book_map_unit,
     finalize_book_map, start_book_map,
 )
+from editroast_core.board_synthesis import adjudicate_editorial_board
 from editroast_core.editorial_board import (
     preview_editorial_board, start_editorial_lenses, editorial_lenses_status,
     claim_editorial_lens_unit, complete_editorial_lens_unit,
@@ -207,6 +208,148 @@ class EditorialBoardPreviewTests(unittest.TestCase):
         )["next_unit"]
         self.assertEqual(first["unit_id"], retry["unit_id"])
         self.assertNotEqual(first["active_attempt_uid"], retry["active_attempt_uid"])
+
+    def _ready_for_chair(self, review_id="board-synthesis-test"):
+        start_editorial_lenses(self.project, self.map_id, review_id)
+        self._finish_lens(
+            review_id, "reader_market", [self.finding("reader-a", "opening", "concern", "major")]
+        )
+        self._finish_lens(
+            review_id, "voice_emotion", [self.finding("voice-a", "opening", "strength", "none")]
+        )
+        self._finish_lens(
+            review_id, "structure_logic", [self.finding("logic-a", "causality", "concern", "moderate")]
+        )
+        return review_id
+
+    def _chair_decision(self, review_id):
+        return {
+            "schema_version": 1, "map_run_id": self.map_id, "review_id": review_id,
+            "revision_uid": self.revision, "source_sha256": self.map["source_sha256"],
+            "chair_persona_id": "editorial_board",
+            "verdict": {
+                "classification": "revision_recommended",
+                "summary": "Some improvements are worth considering.",
+                "rationale": "Synthetic evidence inspected across three distinct lenses.",
+            },
+            "groups": [
+                {
+                    "canonical_id": "opening",
+                    "source_root_cause_ids": ["opening"],
+                    "disposition": "revise", "category": "subjective",
+                    "assessment": "Reader concerns outweigh this specific positive note.",
+                    "rationale": "The source may benefit from a sharper opening.",
+                    "recommendation": "Ask the author to clarify the opening premise.",
+                    "dissent_resolution": "Voice editor's opposing positive assessment is preserved.",
+                    "depends_on": ["causality"], "conflicts_with": [],
+                },
+                {
+                    "canonical_id": "causality",
+                    "source_root_cause_ids": ["causality"],
+                    "disposition": "monitor", "category": "mixed",
+                    "assessment": "Check whether the causal order is intentional.",
+                    "rationale": "Synthetic test keeps uncertain sequence nonfinal.",
+                    "recommendation": "", "dissent_resolution": "",
+                    "depends_on": [], "conflicts_with": [],
+                },
+            ],
+        }
+
+    def test_chief_adjudication_preserves_dissent_and_prioritizes_dependencies(self):
+        review = self._ready_for_chair()
+        result = adjudicate_editorial_board(self.project, self.map_id, review, self._chair_decision(review))
+        self.assertTrue(result["ok"], result.get("errors"))
+        self.assertTrue(result["board_adjudication_complete"])
+        self.assertEqual(result["editorial_board"]["chair_name_en"], "Chief Sterling")
+        self.assertFalse(result["editorial_board"]["independent_fourth_review"])
+        self.assertEqual(
+            [group["canonical_id"] for group in result["editorial_board"]["groups"]],
+            ["causality", "opening"],
+        )
+        self.assertEqual(len(result["correction_list"]), 1)
+        self.assertEqual(result["correction_list"][0]["correction_id"], "opening")
+        self.assertEqual(result["correction_list"][0]["author_decision_status"], "pending")
+        self.assertEqual(
+            {item["id"] for editor in result["editors"] for item in editor["findings"]},
+            {"reader-a", "voice-a", "logic-a"},
+        )
+        self.assertFalse(result["er013_safe_apply_invoked"])
+        self.assertFalse(result["author_approval_recorded"])
+
+    def test_no_findings_still_permits_explicated_no_action_verdict(self):
+        review = "clean-board"
+        start_editorial_lenses(self.project, self.map_id, review)
+        for persona in ("reader_market", "voice_emotion", "structure_logic"):
+            self._finish_lens(review, persona)
+        decision = self._chair_decision(review)
+        decision["groups"] = []
+        decision["verdict"] = {
+            "classification": "no_changes_recommended", "summary": "No actionable issues.",
+            "rationale": "All three lenses reported zero issues on a clean synthetic chapter.",
+        }
+        result = adjudicate_editorial_board(self.project, self.map_id, review, decision)
+        self.assertTrue(result["ok"], result.get("errors"))
+        self.assertEqual(result["correction_list"], [])
+
+    def test_board_rejects_missing_root_fake_revision_and_unexplained_dissent(self):
+        review = self._ready_for_chair("invalid-synthesis")
+        for variant in ("missing", "foreign", "dissent", "duplicates", "unknown-link", "cycle"):
+            value = self._chair_decision(review)
+            if variant == "missing":
+                value["groups"].pop()
+            elif variant == "foreign":
+                value["source_sha256"] = "wrong SHA"
+            elif variant == "dissent":
+                value["groups"][0]["dissent_resolution"] = ""
+            elif variant == "duplicates":
+                value["groups"][1]["source_root_cause_ids"] = ["opening"]
+            elif variant == "unknown-link":
+                value["groups"][0]["depends_on"] = ["not-a-real-group"]
+            elif variant == "cycle":
+                value["groups"][1]["depends_on"] = ["opening"]
+            with self.subTest(variant=variant):
+                result = adjudicate_editorial_board(self.project, self.map_id, review, value)
+                self.assertFalse(result["ok"], variant)
+
+    def test_semantic_merge_needs_explicit_rationale_and_preserves_each_finding(self):
+        review = self._ready_for_chair("explicit-merge")
+        decision = self._chair_decision(review)
+        decision["groups"] = [{
+            "canonical_id": "combined",
+            "source_root_cause_ids": ["opening", "causality"],
+            "disposition": "needs_author_decision", "category": "mixed",
+            "assessment": "Two explicit editorial topics are related.",
+            "rationale": "Manual board attribution only.",
+            "merge_rationale": "The author should decide if these concern the same structural decision.",
+            "dissent_resolution": "The voice position remains visible as dissent.",
+            "recommendation": "Ask the author about the combined structural intent.",
+            "depends_on": [], "conflicts_with": [],
+        }]
+        result = adjudicate_editorial_board(self.project, self.map_id, review, decision)
+        self.assertTrue(result["ok"], result.get("errors"))
+        self.assertEqual(len(result["correction_list"]), 1)
+        self.assertEqual(len(result["correction_list"][0]["finding_ids"]), 3)
+        self.assertEqual(result["editorial_board"]["unresolved_author_decisions"], ["combined"])
+        decision["groups"][0]["merge_rationale"] = ""
+        self.assertFalse(adjudicate_editorial_board(self.project, self.map_id, review, decision)["ok"])
+
+    def test_cli_board_adjudication_exits_2_on_invalid_decision(self):
+        review = self._ready_for_chair("cli-synthesis")
+        decision_path = self.root / "decisions.json"
+        cmd = [
+            sys.executable, str(ROOT / "scripts" / "editroast.py"),
+            "editorial", "adjudicate", str(self.project.root), self.map_id, review,
+            "--decisions", str(decision_path),
+        ]
+        decision_path.write_text(json.dumps(self._chair_decision(review)), encoding="utf-8")
+        ok = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+        self.assertTrue(json.loads(ok.stdout)["board_adjudication_complete"])
+        bad = self._chair_decision(review)
+        bad["groups"][0]["source_root_cause_ids"] = ["unknown"]
+        decision_path.write_text(json.dumps(bad), encoding="utf-8")
+        failed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        self.assertEqual(failed.returncode, 2, failed.stdout + failed.stderr)
 
     def test_three_lenses_merge_explicit_causes_without_forcing_consensus(self):
         result = preview_editorial_board(self.project, self.map_id, self.submission())
