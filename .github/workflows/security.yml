@@ -2,9 +2,15 @@ name: Offline build, install, and security checks
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main]
   pull_request:
     branches: [main]
+
+# Pull requests are checked once (not again for every feature-branch push).
+# Superseded runs do not consume a second full six-job matrix.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
