@@ -1,6 +1,6 @@
 # Durable manuscript state and ingestion
 
-This document describes the ER-010/ER-011 implementation in `src/editroast_core/manuscript_state.py`. It is local, standard-library-only code. Manuscript text is always untrusted data and never authorizes command execution, uploads, network access, or other external actions.
+This document describes the ER-010/ER-011/ER-012 implementation in `src/editroast_core/manuscript_state.py` and `revision_diff.py`. It is local, standard-library-only code. Manuscript text is always untrusted data and never authorizes command execution, uploads, network access, or other external actions.
 
 ## Project directory
 
@@ -22,7 +22,7 @@ Imports are copied through `.staging/`, flushed, SHA-256 checked, and atomically
 
 ## Schema and migrations
 
-`schema_migrations` records each applied migration. Schema version 1 creates the durable tables; version 2 imports compatible preview-ledger rows without deleting or renaming the old tables.
+`schema_migrations` records each applied migration. Schema version 1 creates the durable tables; version 2 imports compatible preview-ledger rows without deleting or renaming the old tables; version 3 adds structured diffs and append-only reconciliation.
 
 | Table | Responsibility |
 |---|---|
@@ -31,25 +31,29 @@ Imports are copied through `.staging/`, flushed, SHA-256 checked, and atomically
 | `chapters` | Revision-local chapter order and stable chapter IDs |
 | `paragraphs` | Complete extracted paragraph map, stable IDs, occurrence identity, context, style/runs and source references |
 | `paragraph_changes` | Added, removed, changed, unchanged or ambiguous relationships to the previous revision |
+| `revision_diff_groups` | Typed chapter/paragraph relations with confidence, status, lexical signals and structured details |
+| `revision_diff_members` | Ordered before/after members and immutable text snapshots for each relation |
+| `reconciliation_candidates` | Ranked possible mappings for underdetermined relations |
+| `reconciliation_events` | Append-only manual resolve/reopen history |
 | `editorial_findings` | Findings bound to their exact source revision and optional paragraph ID |
 | `author_decisions` | Current accepted/approved, rejected, pending or deferred decision state |
 | `decision_events` | Append-only decision state history |
 | `runs` | Reserved typed run/provenance records for later workflow PRs |
 | `audit_log` | Schema, project and revision lifecycle events |
 
-When a project contains the PR-01 preview tables (`revisions`, `findings`, `decisions`), opening it creates corresponding durable revision, finding, decision and event records. The old tables remain available, so `scripts/editroast_state.py --project ...` continues to work. A migrated snapshot that has no old structured paragraph map is labelled `legacy`; its original hash and decision/finding history remain inspectable.
+When a project contains the PR-01 preview tables (`revisions`, `findings`, `decisions`), opening it creates corresponding durable revision, finding, decision and event records. The old tables remain available, so `scripts/editroast_state.py --project ...` continues to work. A migrated snapshot that has no old structured paragraph map is labelled `legacy`; its original hash and decision/finding history remain inspectable. Opening a schema-v2 project backfills its existing PR-02 change rows into the structured API. Evidence unavailable in the old schema is explicitly marked as legacy or unresolved rather than invented.
 
 ## Revision lifecycle
 
 1. Validate the suffix and fully parse the input before changing project state.
 2. For DOCX, validate every ZIP member, decompression limits, encryption/symlinks, and XML safety.
 3. Compute the original SHA-256 and structured content-map hash.
-4. Reconcile chapters and paragraphs conservatively against the parent revision.
+4. Reconcile chapters and paragraphs conservatively against the parent revision and create the structured diff.
 5. Copy and verify the immutable snapshot using an atomic filesystem move.
 6. Insert the revision graph, complete structure, change records and audit event in one SQLite transaction.
-7. Use `manuscript verify` to detect missing, resized or modified snapshots and paragraph/chapter count mismatches.
+7. Use `manuscript verify` to detect snapshot corruption, structure mismatches, or incomplete diff coverage.
 
-Import never rewrites the supplied file. ER-012/ER-013 semantic diff and author-approved change application are not part of this implementation.
+Import never rewrites the supplied file. ER-013 author-approved change application is not part of this implementation.
 
 ## Paragraph identity
 
@@ -62,6 +66,16 @@ A paragraph's permanent `stable_id` is an opaque stored UUID, not a line number 
 - structural order and reciprocal text similarity for changed paragraphs.
 
 Repeated identical paragraphs always have distinct IDs. Their IDs carry forward by occurrence only when the repeat count remains stable. If insertion/removal makes the mapping underdetermined, the new paragraph gets a fresh ID and `reconciliation_status=ambiguous`. This is intentionally safer than silently binding a future finding or edit to the wrong passage.
+
+## Structural diff and reconciliation
+
+Each revision is compared with its direct parent. Relations are `unchanged`, `changed`, `moved`, `split`, `merged`, `added`, `removed`, or `ambiguous`. Exact identity is resolved first. Reciprocal similarity, chapter identity, neighboring fingerprints, relative position, and sequence order then provide structural evidence. A longest-increasing-subsequence pass distinguishes a true move from ordinary index shifts caused by insertions. Split and merge groups retain all participating stable IDs; the strongest continuity member carries the old paragraph ID.
+
+Underdetermined matches are never accepted automatically. They contain ranked candidates, numeric confidence, a coarse confidence label, and the evidence used to score them. A manual resolution appends a `resolve` event; reopening appends another event that supersedes the previous one. Neither action changes source snapshots, revision rows, paragraph text, or stored IDs. The effective relation is an overlay suitable for future approval tooling, correction lists, and targeted re-analysis.
+
+An active before-side or after-side stable ID can be owned by only one effective diff group. Reconciliation rejects overlaps with automatic or manually resolved groups using a deterministic conflict error. Split and merge remain valid because their multiple members belong to one group; reopening that group releases its claims before a replacement mapping is recorded.
+
+The structured diff stores lexical risk signals for changed text: numbers, negation tokens, and capitalized terms. These are prompts for human review only. The engine does not claim to determine semantic equivalence, factual correctness, character identity, or authorial intent. Low-confidence changes remain in the reconciliation queue even when such signals are present.
 
 ## Ingestion and completeness
 
@@ -85,7 +99,13 @@ python scripts/editroast.py manuscript import ./my-book manuscript.docx
 python scripts/editroast.py manuscript status ./my-book
 python scripts/editroast.py manuscript revisions ./my-book
 python scripts/editroast.py manuscript show ./my-book r000001
+python scripts/editroast.py manuscript diff ./my-book r000002
+python scripts/editroast.py manuscript diff ./my-book r000002 --include-text
+python scripts/editroast.py manuscript reconcile-list ./my-book r000002
+python scripts/editroast.py manuscript reconcile ./my-book r000002 <group-id> --candidate <candidate-id> --actor author
+python scripts/editroast.py manuscript reconcile-history ./my-book r000002
+python scripts/editroast.py manuscript reconcile-reopen ./my-book r000002 <group-id> --actor author
 python scripts/editroast.py manuscript verify ./my-book
 ```
 
-The `show` and `revisions` output includes source hash, parent, counts, warnings and change totals. `verify` exits with status 2 if integrity checks fail. All commands work without an API key or network service.
+For an explicit mapping instead of a candidate, use `--relation` with repeated `--before` and `--after` stable IDs. The `diff` and reconciliation-list commands redact manuscript text unless `--include-text` is requested. `verify` exits with status 2 if integrity checks fail. All commands work without an API key or network service.

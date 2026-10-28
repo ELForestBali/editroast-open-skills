@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 
-VERSION = "2.0.0-alpha.2"
+VERSION = "2.0.0-alpha.3"
 SKILLS = (
     "manuscript-roast",
     "manuscript-proofreading",
@@ -118,6 +118,7 @@ def verify_archive(path: Path, expected_skills: tuple[str, ...]) -> None:
                     f"{base}/scripts/editroast_core/cli.py",
                     f"{base}/scripts/editroast_core/manuscript_state.py",
                     f"{base}/scripts/editroast_core/manuscript_workflow.py",
+                    f"{base}/scripts/editroast_core/revision_diff.py",
                     f"{base}/scripts/editroast_core/editroast_state.py",
                     f"{base}/templates/book-map.md",
                 }
