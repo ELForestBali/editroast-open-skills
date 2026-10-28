@@ -85,6 +85,12 @@ The validator can catch missing work and invented or miscopied quotes. It cannot
 
 Codex and Claude Code can use the account or provider configured in those products. No API key is required by this repository. Advanced users may run their agent through a separately configured API account, but keys must remain in environment variables or the provider's credential store—never in this repo, a prompt, or a manuscript workspace.
 
+## How this works under the hood
+
+EditRoast is **not just a reusable prompt**: it combines agent-level editorial instructions with maintained offline Python tools for manuscript preparation, persistent chunk progress, source-grounded evidence validation, reproducible ZIP builds and installation checks. As of PR-01 there are **706 lines of canonical Python Core, 525 lines of installer/CLI/build/security tooling, and 315 lines of tests** (physical lines including blanks; [measurement scope and source commit](docs/UNDER-THE-HOOD.md)).
+
+Read the [detailed engineering explainer](docs/UNDER-THE-HOOD.md) for executable architecture, data flow, security boundaries, exact implementation status, test methodology and limitations. Contributors and coding agents should also read [AGENTS.md](AGENTS.md). These are verifiable engineering facts, **not** a claim that full AI-powered book rewriting, translation or print-ready publishing have shipped.
+
 ## Repository map
 
 ```text
