@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,7 +93,10 @@ class BookMapTests(unittest.TestCase):
 
     def test_snapshot_tamper_is_rejected(self):
         book = inventory_book(self.project, self.revision)
-        Path(self.project.revision(self.revision)["snapshot"]).write_text("tampered", encoding="utf-8")
+        snapshot = Path(self.project.revision(self.revision)["snapshot"])
+        # Immutable snapshots are intentionally read-only; simulate external tampering.
+        snapshot.chmod(snapshot.stat().st_mode | stat.S_IWUSR)
+        snapshot.write_text("tampered", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "integrity"):
             validate_book_map(self.project, self.revision, book)
 
