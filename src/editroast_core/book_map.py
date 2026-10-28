@@ -167,13 +167,13 @@ def validate_book_map(project: ManuscriptProject, revision_uid: str, payload: di
             errors.append(f"{prefix}: missing or duplicate record ID")
         else:
             seen_records.add(rid)
-        if record.get("kind") not in RECORD_KINDS:
+        if not isinstance(record.get("kind"), str) or record["kind"] not in RECORD_KINDS:
             errors.append(f"{prefix}: unsupported record kind")
-        if record.get("epistemic_status") not in EPISTEMIC_LABELS:
+        if not isinstance(record.get("epistemic_status"), str) or record["epistemic_status"] not in EPISTEMIC_LABELS:
             errors.append(f"{prefix}: unsupported epistemic status")
-        if record.get("scope") not in SCOPES:
+        if not isinstance(record.get("scope"), str) or record["scope"] not in SCOPES:
             errors.append(f"{prefix}: unsupported scope")
-        if record.get("narrative_frame") not in NARRATIVE_FRAMES:
+        if not isinstance(record.get("narrative_frame"), str) or record["narrative_frame"] not in NARRATIVE_FRAMES:
             errors.append(f"{prefix}: unsupported narrative frame")
         if not isinstance(record.get("statement"), str) or not record["statement"].strip():
             errors.append(f"{prefix}: missing statement")
@@ -188,7 +188,8 @@ def validate_book_map(project: ManuscriptProject, revision_uid: str, payload: di
                 continue
             if anchor.get("revision_uid") != revision_uid:
                 errors.append(f"{ap}: revision mismatch")
-            para = paragraph_text.get(anchor.get("paragraph_stable_id"))
+            paragraph_id = anchor.get("paragraph_stable_id")
+            para = paragraph_text.get(paragraph_id) if isinstance(paragraph_id, str) else None
             quote = anchor.get("exact_quote")
             if para is None:
                 errors.append(f"{ap}: unknown paragraph stable ID")
