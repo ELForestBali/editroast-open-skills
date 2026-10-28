@@ -26,6 +26,8 @@ My Novel/
   .claude/skills/
     manuscript-roast/
     manuscript-proofreading/
+    literary-translation/
+    book-production/
 ```
 
 Start Claude Code from the manuscript project:
@@ -55,7 +57,7 @@ Claude Code will request command permission according to your configuration. Rev
 python install.py --target claude --scope user --skill all
 ```
 
-Use `--skill roast` or `--skill proofreading` to install only one skill.
+Use `--skill roast`, `--skill proofreading`, `--skill translation`, or `--skill production` to install only one skill. Translation and production are BETA foundations, not finished end-to-end engines.
 
 ## Cost and privacy
 

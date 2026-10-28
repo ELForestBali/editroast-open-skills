@@ -1,5 +1,5 @@
 interface:
   display_name: "Full Manuscript Roast"
   short_description: "Evidence-backed critique for an entire book"
-  default_prompt: "Critique my complete manuscript and build a prioritized revision plan."
+  default_prompt: "Use $manuscript-roast to critique my complete manuscript and build a prioritized revision plan."
 

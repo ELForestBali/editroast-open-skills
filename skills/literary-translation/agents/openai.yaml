@@ -1,0 +1,4 @@
+interface:
+  display_name: "Literary Translation (Beta)"
+  short_description: "Plan translation decisions and glossary safely"
+  default_prompt: "Use $literary-translation to inventory the translation decisions for my manuscript."

@@ -6,6 +6,7 @@ __pycache__/
 editroast-work/
 *.docx
 dist/*.zip
+dist/SHA256SUMS.txt
 !examples/**/*.docx
 .tmp-*/
 

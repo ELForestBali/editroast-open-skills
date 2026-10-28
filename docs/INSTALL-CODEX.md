@@ -25,9 +25,11 @@ My Novel/
   .agents/skills/
     manuscript-roast/
     manuscript-proofreading/
+    literary-translation/
+    book-production/
 ```
 
-Open `My Novel` in Codex. If Codex was already open and the skills do not appear, restart it. Type `$` or use `/skills` to confirm that `manuscript-roast` and `manuscript-proofreading` are available.
+Open `My Novel` in Codex. If Codex was already open and the skills do not appear, restart it. Type `$` or use `/skills` to confirm that all selected skills are available. Literary translation and book production are visibly labelled BETA.
 
 ## Run a skill
 
@@ -57,7 +59,7 @@ This copies the skills to `~/.agents/skills`. Project installation is easier to 
 
 ## Install only one skill
 
-Use `--skill roast` or `--skill proofreading` instead of `--skill all`.
+Use `--skill roast`, `--skill proofreading`, `--skill translation`, or `--skill production` instead of `--skill all`.
 
 ## Cost and privacy
 
