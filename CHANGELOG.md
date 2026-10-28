@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.0-alpha.2 — unreleased
+
+- Added ER-010 durable SQLite manuscript projects, schema migrations, immutable revision snapshots, integrity verification, revision-linked findings, and append-only author-decision history.
+- Added ER-011 safe DOCX/TXT/Markdown ingestion with structured chapters, paragraphs, formatting runs, warnings, archive safety limits, and conservative cross-revision paragraph identity.
+- Added the offline `editroast.py` project/manuscript CLI while preserving the v1 workflow and preview-ledger commands.
+
 ## 2.0.0-alpha.1 — unreleased
 
 - Added a four-skill source layout with Literary Translation and Book Production clearly labelled BETA.

@@ -6,6 +6,7 @@ This document guides **coding agents and human maintainers working on this repos
 
 - [README.md](README.md): actual supported user-facing behavior
 - [docs/UNDER-THE-HOOD.md](docs/UNDER-THE-HOOD.md): architecture, source metrics, boundaries
+- [docs/MANUSCRIPT-STATE.md](docs/MANUSCRIPT-STATE.md): durable project schema, ingest, integrity and paragraph identity
 - [docs/adr/0001-canonical-core-and-skill-bundles.md](docs/adr/0001-canonical-core-and-skill-bundles.md): canonical Core and bundling
 - [docs/PROVENANCE.md](docs/PROVENANCE.md): preserved historical requirements and exclusions
 - [docs/PRIVACY-SECURITY-LICENSES.md](docs/PRIVACY-SECURITY-LICENSES.md): data boundary and license assumptions
