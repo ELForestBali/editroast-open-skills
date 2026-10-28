@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.0-alpha.5 — unreleased
+
+- Added ER-014 schema-v5 resumable runs with immutable revision-bound plans, chapter or paragraph work units, attempt tokens, and append-only checkpoint history.
+- Added idempotent completion, explicit usage-limit and author-decision checkpoints, crash recovery that requeues only unfinished work, and project-local SHA-256-verified results.
+- Added verified coverage that refuses false 100% completion when a result is missing, empty, outside the project, changed, or no longer bound to the source plan.
+
 ## 2.0.0-alpha.4 — unreleased
 
 - Added ER-013 correction proposals with append-only approve, reject, defer, batch, and semantic-group decision history.
