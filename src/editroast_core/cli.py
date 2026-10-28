@@ -7,6 +7,7 @@ import json
 import sqlite3
 
 from .manuscript_state import ManuscriptProject
+from .editorial_board import preview_editorial_board
 from .book_map import (
     MAX_QUALITY_BYTES,
     advance_book_map,
@@ -238,6 +239,13 @@ def build_parser() -> argparse.ArgumentParser:
     book_quality.add_argument("--assessment", required=True)
     book_quality.add_argument("--actor", default="reviewer")
 
+    editorial_group = groups.add_parser("editorial")
+    editorial_actions = editorial_group.add_subparsers(dest="action", required=True)
+    editorial_preview = editorial_actions.add_parser("board-preview")
+    editorial_preview.add_argument("project")
+    editorial_preview.add_argument("map_run_id")
+    editorial_preview.add_argument("--reviews", required=True)
+
     bundle_group = groups.add_parser("bundle")
     bundle_actions = bundle_group.add_subparsers(dest="action", required=True)
     bundle_export = bundle_actions.add_parser("export")
@@ -266,7 +274,11 @@ def run(args: argparse.Namespace) -> int:
             payload = project.status()
     else:
         with ManuscriptProject.open(args.project) as project:
-            if args.group == "book-map" and args.action == "inventory":
+            if args.group == "editorial" and args.action == "board-preview":
+                payload = preview_editorial_board(
+                    project, args.map_run_id, read_book_map(args.reviews)
+                )
+            elif args.group == "book-map" and args.action == "inventory":
                 payload = inventory_book(project, args.revision, include_text=args.include_text)
             elif args.group == "book-map" and args.action == "validate":
                 payload = validate_book_map(project, args.revision, read_book_map(args.map_file))
@@ -441,7 +453,7 @@ def run(args: argparse.Namespace) -> int:
             else:
                 payload = project.verify()
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
-    verification = (args.action == "verify" and args.group in {"manuscript", "run"}) or (args.group == "book-map" and args.action == "validate")
+    verification = (args.action == "verify" and args.group in {"manuscript", "run"}) or (args.group == "book-map" and args.action == "validate") or (args.group == "editorial" and args.action == "board-preview")
     return 2 if verification and not payload["ok"] else 0
 
 
