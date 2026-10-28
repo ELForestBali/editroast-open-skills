@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.0-alpha.4 — unreleased
+
+- Added ER-013 correction proposals with append-only approve, reject, defer, batch, and semantic-group decision history.
+- Added deterministic apply previews, exact plan hashes, source-integrity and stale-revision gates, overlap and ambiguity blocking, and explicit author confirmation.
+- Added conservative TXT/Markdown/DOCX application to a new immutable revision, verified before/after spans, DOCX formatting-collision refusal, and previewed non-destructive rollback revisions.
+
 ## 2.0.0-alpha.3 — unreleased
 
 - Added ER-012 structural revision diffs for chapter and paragraph moves, changes, splits, merges, additions, removals, and repeated-fragment ambiguity.

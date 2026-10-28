@@ -31,6 +31,7 @@ ALLOWED_IMPORTS = {
     "pathlib",
     "re",
     "revision_diff",
+    "safe_apply",
     "scripts",
     "shutil",
     "sqlite3",

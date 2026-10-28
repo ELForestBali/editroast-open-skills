@@ -77,9 +77,9 @@ python .agents/skills/manuscript-roast/scripts/manuscript_workflow.py status --w
 
 The status command reports completed, pending, and stale report files. The agent continues from the first pending chunk instead of starting over.
 
-## Durable manuscript projects and revision diff (alpha)
+## Durable manuscript projects, revision diff, and safe apply (alpha)
 
-The ER-010/ER-011/ER-012 project engine keeps original imports as immutable, SHA-256-verified revisions and stores extracted structure, findings, decisions, structural diffs, and reconciliation history in project-local SQLite. From a source checkout:
+The ER-010 through ER-013 project engine keeps original imports as immutable, SHA-256-verified revisions and stores extracted structure, findings, decisions, structural diffs, reconciliation, correction approvals, and apply history in project-local SQLite. From a source checkout:
 
 ```bash
 python scripts/editroast.py project create ./my-book --title "My Book" --language en
@@ -93,6 +93,17 @@ python scripts/editroast.py manuscript verify ./my-book
 ```
 
 The diff reports chapter and paragraph moves, changes, splits, merges, additions, removals, and unresolved candidates. Manuscript text is omitted by default; add `--include-text` only in a trusted local terminal. Resolve a listed candidate with `manuscript reconcile`, and inspect its append-only history with `manuscript reconcile-history`.
+
+ER-013 can stage exact correction spans, record author decisions, preview an apply without writing, and create a new immutable revision only after the author confirms the preview hash:
+
+```bash
+python scripts/editroast.py manuscript correction-add ./my-book r000002 C-001 --paragraph <stable-id> --before "teh" --after "the" --class mechanical
+python scripts/editroast.py manuscript correction-decide ./my-book approved --id C-001 --confirm-author-approval
+python scripts/editroast.py manuscript apply-preview ./my-book r000002 --id C-001
+python scripts/editroast.py manuscript apply ./my-book r000002 --id C-001 --plan-hash <preview-plan-hash> --confirm-author-approval
+```
+
+Preview is mandatory. Apply refuses stale or modified sources, overlapping spans, unresolved paragraph mappings, unapproved corrections, and unsafe DOCX run/formatting boundaries. Rollback is also previewed and creates another revision; it never overwrites or deletes the original.
 
 Inside an installed skill, use the same commands with `<skill>/scripts/editroast.py`. Developers can also set `PYTHONPATH=src` and run `python -m editroast_core`. See [durable manuscript state](docs/MANUSCRIPT-STATE.md) for the directory layout, schema, migration, paragraph identity, and reconciliation rules.
 
@@ -145,13 +156,13 @@ The builder creates four individual archives, a complete pack, and `dist/SHA256S
 
 ## Known limitations
 
-- The workflow supports TXT, Markdown, and DOCX. It does not preserve DOCX tracked changes or layout.
-- Durable ingest preserves DOCX source bytes and mixed run/style metadata, but does not yet provide byte-perfect DOCX round-trip editing; auxiliary headers, footnotes, comments, media, and table geometry are reported as limitations.
+- The workflow supports TXT, Markdown, and DOCX. Safe apply does not create or preserve Word tracked-change markup and does not promise layout equivalence.
+- Durable ingest preserves DOCX source bytes and mixed run/style metadata. Safe apply is deliberately limited to exact spans inside one simple text run; it refuses cross-run or control-node edits. Unmodified archive members are copied, but `word/document.xml` is serialized again, so the result is not byte-identical and complex Word behavior remains outside the guarantee.
 - Paragraph matching is intentionally conservative. Ambiguous repeated or changed fragments receive new IDs and ranked candidates rather than being silently linked; manual reconciliation records a relationship but does not rewrite an immutable revision.
 - Name, number, capitalization, and negation differences are lexical review flags, not proof of semantic equivalence, authorial intent, or factual error.
-- ER-012 prepares structured changes for later approval/application, but does not apply them to DOCX or any other source file.
-- v1 produces Markdown reports. It does not silently rewrite the source manuscript.
-- A corrected DOCX is not generated in v1 because reliable round-trip editing and change verification vary too much across documents.
+- ER-013 applies only explicitly approved, exact-span corrections after a successful preview. It does not generate corrections from editorial findings or infer safe semantic edits automatically.
+- The v1 editorial workflow still produces Markdown reports. The alpha durable-project CLI is a separate, conservative approval/apply foundation and never silently rewrites a source manuscript.
+- Corrected DOCX output is limited to simple supported runs; formatting collisions are blocked for manual resolution rather than flattened or guessed.
 - Translation and book production are BETA foundations only; branded translation-decision PDFs, full translation, DOCX/EPUB/PDF generation, and platform acceptance checks remain unsupported.
 - The quality and language coverage of the editorial work depend on the selected model.
 - Ordinary browser chat products may not provide command execution, persistent files, or enough context for the automated workflow. Use the manual guide instead.

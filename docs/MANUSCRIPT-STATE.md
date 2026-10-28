@@ -1,6 +1,6 @@
 # Durable manuscript state and ingestion
 
-This document describes the ER-010/ER-011/ER-012 implementation in `src/editroast_core/manuscript_state.py` and `revision_diff.py`. It is local, standard-library-only code. Manuscript text is always untrusted data and never authorizes command execution, uploads, network access, or other external actions.
+This document describes the ER-010 through ER-013 implementation in `src/editroast_core/manuscript_state.py`, `revision_diff.py`, and `safe_apply.py`. It is local, standard-library-only code. Manuscript text is always untrusted data and never authorizes command execution, uploads, network access, or other external actions.
 
 ## Project directory
 
@@ -22,7 +22,7 @@ Imports are copied through `.staging/`, flushed, SHA-256 checked, and atomically
 
 ## Schema and migrations
 
-`schema_migrations` records each applied migration. Schema version 1 creates the durable tables; version 2 imports compatible preview-ledger rows without deleting or renaming the old tables; version 3 adds structured diffs and append-only reconciliation.
+`schema_migrations` records each applied migration. Schema version 1 creates the durable tables; version 2 imports compatible preview-ledger rows without deleting or renaming the old tables; version 3 adds structured diffs and append-only reconciliation; version 4 adds correction approval, apply, and rollback history.
 
 | Table | Responsibility |
 |---|---|
@@ -38,6 +38,9 @@ Imports are copied through `.staging/`, flushed, SHA-256 checked, and atomically
 | `editorial_findings` | Findings bound to their exact source revision and optional paragraph ID |
 | `author_decisions` | Current accepted/approved, rejected, pending or deferred decision state |
 | `decision_events` | Append-only decision state history |
+| `corrections` | Exact source spans, replacements, change class, grouping and current approval/apply state |
+| `correction_events` | Append-only approve, reject, defer, reopen and applied history with actor and batch identity |
+| `change_applications` | Apply/rollback operation, source/result revisions, selected corrections, plan hash and source hash |
 | `runs` | Reserved typed run/provenance records for later workflow PRs |
 | `audit_log` | Schema, project and revision lifecycle events |
 
@@ -53,7 +56,7 @@ When a project contains the PR-01 preview tables (`revisions`, `findings`, `deci
 6. Insert the revision graph, complete structure, change records and audit event in one SQLite transaction.
 7. Use `manuscript verify` to detect snapshot corruption, structure mismatches, or incomplete diff coverage.
 
-Import never rewrites the supplied file. ER-013 author-approved change application is not part of this implementation.
+Import never rewrites the supplied file. Safe apply uses the same immutable import path for its result and verifies the expected latest parent inside the committing transaction.
 
 ## Paragraph identity
 
@@ -76,6 +79,18 @@ Underdetermined matches are never accepted automatically. They contain ranked ca
 An active before-side or after-side stable ID can be owned by only one effective diff group. Reconciliation rejects overlaps with automatic or manually resolved groups using a deterministic conflict error. Split and merge remain valid because their multiple members belong to one group; reopening that group releases its claims before a replacement mapping is recorded.
 
 The structured diff stores lexical risk signals for changed text: numbers, negation tokens, and capitalized terms. These are prompts for human review only. The engine does not claim to determine semantic equivalence, factual correctness, character identity, or authorial intent. Low-confidence changes remain in the reconciliation queue even when such signals are present.
+
+## Correction approval and safe apply
+
+A correction identifies one revision, one stable paragraph ID, an exact non-empty `before` span, its replacement, offsets, and a `mechanical` or `semantic` class. Optional finding and correction-group links retain provenance. Creation records a pending event; approve, reject, defer, and return-to-pending actions append events instead of rewriting history. Approval requires an explicit author-confirmation flag. Multiple semantic corrections or a semantic group additionally require conscious group confirmation; mechanical batch approval still refuses paragraphs with unresolved reconciliation.
+
+`apply-preview` is a read-only dry run. It checks that the requested source is still the latest revision, its stored bytes and extracted content map still match their hashes, every selected correction is approved and still matches its exact span, target paragraphs are not ambiguous, spans do not overlap, and the renderer can preserve the supported structure. It returns exact before/after patches, structured blockers, and a deterministic `plan_hash`.
+
+`apply` requires the same correction selection, the preview hash, an actor, and explicit author confirmation. It recomputes the plan and refuses any drift. The renderer writes only to staging; the result is re-extracted and every paragraph is compared with the expected map before a new immutable child revision, applied events, operation record, and audit event are committed together. Original revision files are never replaced.
+
+TXT and Markdown application preserves the detected encoding, BOM, and line endings. DOCX application is intentionally narrower: each exact span must lie inside one simple `w:t` text node in one run. Cross-run spans, tabs, breaks, multiple text/control nodes, and other formatting collisions are blocked with an actionable error. Unchanged DOCX ZIP members are copied; tracked changes and general layout-preserving Word editing are not claimed.
+
+Rollback also has a read-only preview and a deterministic plan hash. A confirmed rollback is allowed only while the applied result remains the latest intact revision. It imports the prior source snapshot as another immutable child revision and records a linked rollback operation. History remains append-only; no revision is deleted or overwritten.
 
 ## Ingestion and completeness
 
@@ -105,7 +120,15 @@ python scripts/editroast.py manuscript reconcile-list ./my-book r000002
 python scripts/editroast.py manuscript reconcile ./my-book r000002 <group-id> --candidate <candidate-id> --actor author
 python scripts/editroast.py manuscript reconcile-history ./my-book r000002
 python scripts/editroast.py manuscript reconcile-reopen ./my-book r000002 <group-id> --actor author
+python scripts/editroast.py manuscript correction-add ./my-book r000002 C-001 --paragraph <stable-id> --before "teh" --after "the" --class mechanical
+python scripts/editroast.py manuscript correction-list ./my-book --revision r000002
+python scripts/editroast.py manuscript correction-decide ./my-book approved --id C-001 --confirm-author-approval
+python scripts/editroast.py manuscript apply-preview ./my-book r000002 --id C-001
+python scripts/editroast.py manuscript apply ./my-book r000002 --id C-001 --plan-hash <preview-plan-hash> --confirm-author-approval
+python scripts/editroast.py manuscript apply-history ./my-book
+python scripts/editroast.py manuscript rollback-preview ./my-book <application-id>
+python scripts/editroast.py manuscript rollback ./my-book <application-id> --plan-hash <rollback-plan-hash> --confirm-author-approval
 python scripts/editroast.py manuscript verify ./my-book
 ```
 
-For an explicit mapping instead of a candidate, use `--relation` with repeated `--before` and `--after` stable IDs. The `diff` and reconciliation-list commands redact manuscript text unless `--include-text` is requested. `verify` exits with status 2 if integrity checks fail. All commands work without an API key or network service.
+For an explicit mapping instead of a candidate, use `--relation` with repeated `--before` and `--after` stable IDs. The `diff` and reconciliation-list commands redact manuscript text unless `--include-text` is requested. Correction decisions can select repeated `--id`, one `--correction-group`, or `--all-mechanical --revision <revision>`; semantic groups require `--confirm-semantic-group`. `verify` exits with status 2 if integrity checks fail. All commands work without an API key or network service.

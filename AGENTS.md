@@ -9,6 +9,7 @@ This document guides **coding agents and human maintainers working on this repos
 - [docs/MANUSCRIPT-STATE.md](docs/MANUSCRIPT-STATE.md): durable project schema, ingest, integrity and paragraph identity
 - [docs/adr/0001-canonical-core-and-skill-bundles.md](docs/adr/0001-canonical-core-and-skill-bundles.md): canonical Core and bundling
 - [docs/adr/0003-structural-revision-diff.md](docs/adr/0003-structural-revision-diff.md): conservative structural diff and reconciliation
+- [docs/adr/0004-safe-approval-apply.md](docs/adr/0004-safe-approval-apply.md): author approval, dry-run apply and rollback gates
 - [docs/PROVENANCE.md](docs/PROVENANCE.md): preserved historical requirements and exclusions
 - [docs/PRIVACY-SECURITY-LICENSES.md](docs/PRIVACY-SECURITY-LICENSES.md): data boundary and license assumptions
 - [docs/SUBSCRIPTION-CAPACITY-PLANNING.md](docs/SUBSCRIPTION-CAPACITY-PLANNING.md): $20-subscription default, 90k-word planning model, quota-safe execution and benchmark acceptance criteria

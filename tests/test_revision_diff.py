@@ -319,7 +319,7 @@ class RevisionDiffTests(unittest.TestCase):
             finally:
                 connection.close()
             with ManuscriptProject.open(project_path) as migrated:
-                self.assertEqual(migrated.status()["schema_version"], 3)
+                self.assertEqual(migrated.status()["schema_version"], 4)
                 payload = migrated.revision_diff(second["revision_uid"])
                 self.assertTrue(payload["groups"])
                 self.assertTrue(any(group["status"] == "legacy_auto" for group in payload["groups"]))
