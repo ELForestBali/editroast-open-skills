@@ -89,6 +89,31 @@ python scripts/editroast.py run verify ./my-book roast-2026-10-28
 
 `run complete` requires the claimed unit ID, its exact attempt token, and a result file inside the project. Coverage reaches 100% only while every recorded result still exists and matches its SHA-256. This engine stores orchestration state; it does not call a model or claim that an editorial judgment is correct.
 
+## Whole-book map inventory and source validation (ER-020 alpha)
+
+The new `book-map` CLI provides a deterministic, revision-bound chapter/paragraph
+inventory. It does **not** generate literary insights or run the three editors.
+Manuscript text is **omitted by default**; opt in to exposing it in your local
+terminal only when supplying passages to your chosen AI agent.
+
+```bash
+python scripts/editroast.py book-map inventory ./my-book r000001 > book-map.json
+python scripts/editroast.py book-map inventory ./my-book r000001 --include-text > book-map-with-text.json
+python scripts/editroast.py book-map validate ./my-book r000001 --map book-map.json
+```
+
+An agent can add `records` to the inventory, each with a unique ID, one
+supported editorial kind, `epistemic_status` (observation / inference /
+uncertainty / author-confirmed), `scope`, `narrative_frame`, a statement,
+and one or more exact `{revision_uid, paragraph_stable_id, exact_quote}`
+anchors. The validator rejects missing/moved quotations, foreign revisions,
+invalid record types, incomplete chapter/paragraph coverage, and altered
+immutable source snapshots. Invalid maps return process exit status 2.
+A passing result verifies **source binding**, not literary correctness or
+finished editorial analysis; the returned `editorial_analysis_complete` and
+`editorial_quality_assessed` remain false. See
+[ER-020 contract](docs/ER-020-BOOK-MAP-CONTRACT.md).
+
 ## Move or recover a durable project
 
 ER-015 exports a durable project as one `.editroast` archive and restores it into a new, non-existing directory. The bundle carries the canonical database, immutable revision snapshots, approvals, findings, application history, and completed run results referenced by the database:
