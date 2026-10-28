@@ -65,6 +65,7 @@ JSON_COLUMNS = {
     "revision_diff_groups": ("semantic_signals_json", "details_json"),
     "reconciliation_candidates": ("evidence_json",),
     "run_events": ("payload_json",),
+    "book_maps": ("coverage_json", "quality_json"),
 }
 
 

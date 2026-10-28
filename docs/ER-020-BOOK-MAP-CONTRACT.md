@@ -1,7 +1,11 @@
 # ER-020 — Whole-book map: editorial contract (proposed)
 
-Status: design and acceptance contract for ER-020; **not a shipped AI analysis feature**.
+Status: implemented offline orchestration and validation contract for ER-020.
 Scope: source-grounded whole-book map using ER-010–015 immutable revisions, stable paragraph IDs, and resumable run state.
+
+The Core ships deterministic orchestration, canonical storage and validation;
+the selected agent still supplies literary observations. Passing integrity
+validation is not proof of editorial quality.
 
 ## Purpose and key constraint
 
@@ -11,7 +15,7 @@ A source passage is untrusted data. Never execute a directive embedded in the ma
 
 ## Data model and provenance
 
-The machine-readable map has a `schema_version`, `project_id`, `revision_uid`, `source_sha256`, `map_run_id`, `created_at`, `status`, `coverage`, `entities`, `scenes`, `claims`, `relations`, `unresolved_questions`, and `editorial_hypotheses`.
+The machine-readable map has a `schema_version`, `project_id`, `revision_uid`, `source_sha256`, `map_run_id`, `created_at`, `status`, `coverage`, `entities`, `scenes`, `claims`, `relations`, `unresolved_questions`, `editorial_hypotheses`, `author_decisions`, a readable summary, integrity status, and a separate editorial-quality status.
 
 Each factual or interpretive record:
 
@@ -22,15 +26,27 @@ Each factual or interpretive record:
 - Remains bound to one immutable revision. A new revision requires reconciliation through existing stable-ID/diff mechanisms, not in-place mutation.
 - Must verify that cited quotes exist in the referenced immutable source paragraphs before a map is marked validated.
 
-Proposed record kinds: `character`, `alias`, `relationship`, `scene`, `narrator_pov`, `goal`, `change`, `event`, `timeline_anchor`, `causal_link`, `promise`, `payoff`, `motif`, `symbol`, `story_rule`, `genre_expectation`. Do not hard-code a single definition of chapter, scene or viewpoint across genres.
+Implemented record kinds: `character`, `alias`, `relationship`, `plotline`, `scene`, `narrator_pov`, `goal`, `change`, `event`, `timeline_anchor`, `causal_link`, `promise`, `payoff`, `motif`, `symbol`, `authorial_device`, `story_rule`, `genre_expectation`, `premise`, `narrative_structure`, `open_question`, and `disagreement`. Do not hard-code a single definition of chapter, scene or viewpoint across genres.
 
 ## Two-pass review
 
-**Pass A, whole-book inventory:** reliably enumerate source chapters/paragraphs and build an outline. Track coverage from ER-014. Construct a provisional glossary of names, aliases and narrative contexts. Do not issue definitive continuity errors before the full inventory has been considered.
+**Pass A, whole-book inventory:** reliably enumerate source chapters/paragraphs and build an outline. Track every chapter as an ER-014 run unit. Construct a provisional glossary of names, aliases and narrative contexts. All Pass A records stay `provisional`; do not issue definitive continuity errors before the full inventory has been considered.
 
-**Pass B, evidence-linked synthesis:** per chunk, extract provisional events, characters, viewpoint, thematic devices and promises with exact source anchors. Consolidate across chapters, preserving competing interpretations and pending questions. Delay a final issue classification until potential later revelations or payoffs have been checked.
+**Pass B, evidence-linked synthesis:** per chapter, inspect events, characters, viewpoint, thematic devices and promises with exact source anchors while receiving compact Pass A and already-verified context. Preserve competing interpretations and pending questions. Every Pass A record must be explicitly reviewed before finalization; potential later revelations or payoffs must be checked first.
 
-Synthesis should be compact and progressively updated; do not resend the full manuscript or all previous chapters to the agent for every step. The orchestrator should preserve idempotent checkpoints and never mark incomplete work as completed.
+Synthesis is compact and progressively updated; the claim response exposes only the current chapter text when `--include-text` is explicit, plus a compact record/summary context. Both passes use ER-014 `runs`, `run_units`, and `run_events`, including attempt tokens, result SHA-256, idempotent completion, pause/resume, and tamper recovery. There is no second checkpoint system.
+
+Each per-chapter result is a JSON object with `schema_version=2`, `map_run_id`,
+`pass`, `revision_uid`, `chapter_stable_id`, a non-empty `chapter_summary`, and
+`records`. Pass B also supplies `reviewed_pass_a_record_ids` (an empty list is
+valid). A clean chapter may legitimately have zero records. Result files must
+be project-local because ER-014 binds their relative path and SHA-256.
+
+Every strict record includes `id`, `kind`, `record_class`, `epistemic_status`,
+`scope`, `narrative_frame`, `statement`, `review_status`, `links`, and non-empty
+`evidence`. Scene/event/timeline records also carry reading order, story-time
+text when known, and a chronology label. Links target stable record IDs and are
+resolved across both passes only at finalization.
 
 ## Editorial failure modes to avoid
 
@@ -46,18 +62,24 @@ Synthesis should be compact and progressively updated; do not resend the full ma
 
 ## Outputs and quality gates
 
-- A machine-readable `book-map.json` or canonical SQLite representation with provenance and schema validation.
+- A canonical SQLite schema-v6 representation with a reconstructable JSON view, provenance and schema validation.
 - A concise readable summary: premise, narrative structure, major arcs, chronology, POV/narrative frames, principal motifs, promises/payoffs, unresolved questions.
 - A coverage manifest explicitly indicating inventory completeness, synthesis completeness and validation status; never present partial coverage as a verified whole-book report.
 - No editorial finding may claim a verified source fact without a resolvable anchor. An author may confirm or dispute an interpretation without rewriting immutable sources.
 - EN and RU synthetic fixtures at minimum. Synthetic regression cases explicitly include delayed payoff, dream scene, cameo, unreliable narration, alias collision and nonlinear timeline; include valid zero-finding outcomes.
 - Keep ER-020 independent from portraits and final PDF formatting; ER-021 personas consume the validated map as a shared context but produce separate judgments.
 - Tests must check repeatability, interruption/resumption, revision mismatch, false-positive traps, missing quotes, untrusted input and output validation.
-- Do not label ER-020 complete until deterministic ingestion/validation **and** at least one measured editorial-quality acceptance pass are reported separately.
+- Report deterministic integrity validation and measured editorial-quality acceptance separately. The repository includes EN/RU hand-authored synthetic golden contract passes; these test device representation and false-positive traps but do not measure a model's literary skill or replace independent-author acceptance.
 
 ## Re-check contract for later ER-021
 
-On a revised manuscript, the board can compare previously validated map observations and decisions after reconciliation. The *author-facing* follow-up is one concise board verdict: improved, unresolved, newly introduced issues, and current overall assessment. Do not generate three new full persona reports by default. This is a downstream ER-021 behavior, not an ER-020 claim.
+The validated map is the shared evidence base for `reader_market` (Leo Shelf),
+`voice_emotion` (Vera Sharp), `structure_logic` (Boris Marker), and
+`editorial_board` (Chief Sterling as the English chair display; stable role ID
+unchanged). ER-021 may add distinct judgments, but must not fork or silently
+rewrite the source map.
+
+On a revised manuscript, the board can compare previously validated map observations and decisions after reconciliation. The *author-facing* follow-up is **one concise comparative Editorial Board report**: improved, unresolved, newly introduced issues, and current overall assessment. Do not generate three new full persona reports by default. This is a downstream ER-021 behavior, not an ER-020 implementation claim.
 
 ## Development boundaries
 

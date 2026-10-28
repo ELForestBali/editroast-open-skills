@@ -7,7 +7,20 @@ import json
 import sqlite3
 
 from .manuscript_state import ManuscriptProject
-from .book_map import inventory_book, read_book_map, validate_book_map
+from .book_map import (
+    MAX_QUALITY_BYTES,
+    advance_book_map,
+    book_map_status,
+    claim_book_map_unit,
+    complete_book_map_unit,
+    finalize_book_map,
+    inventory_book,
+    load_book_map,
+    read_book_map,
+    record_quality_assessment,
+    start_book_map,
+    validate_book_map,
+)
 from .project_bundle import (
     export_project_bundle,
     import_project_bundle,
@@ -186,6 +199,44 @@ def build_parser() -> argparse.ArgumentParser:
     book_validate.add_argument("project")
     book_validate.add_argument("revision")
     book_validate.add_argument("--map", dest="map_file", required=True)
+    book_start = book_map_actions.add_parser("start")
+    book_start.add_argument("project")
+    book_start.add_argument("map_run_id")
+    book_start.add_argument("revision")
+    book_start.add_argument("--actor", default="agent")
+    book_status = book_map_actions.add_parser("status")
+    book_status.add_argument("project")
+    book_status.add_argument("map_run_id")
+    book_advance = book_map_actions.add_parser("advance")
+    book_advance.add_argument("project")
+    book_advance.add_argument("map_run_id")
+    book_advance.add_argument("--actor", default="agent")
+    book_claim = book_map_actions.add_parser("claim")
+    book_claim.add_argument("project")
+    book_claim.add_argument("map_run_id")
+    book_claim.add_argument("--pass", dest="pass_name", choices=("A", "B", "a", "b"), required=True)
+    book_claim.add_argument("--worker", required=True)
+    book_claim.add_argument("--actor", default="agent")
+    book_claim.add_argument("--include-text", action="store_true")
+    book_complete = book_map_actions.add_parser("complete")
+    book_complete.add_argument("project")
+    book_complete.add_argument("map_run_id")
+    book_complete.add_argument("unit_id")
+    book_complete.add_argument("--pass", dest="pass_name", choices=("A", "B", "a", "b"), required=True)
+    book_complete.add_argument("--attempt", required=True)
+    book_complete.add_argument("--result", required=True)
+    book_complete.add_argument("--actor", default="agent")
+    book_finalize = book_map_actions.add_parser("finalize")
+    book_finalize.add_argument("project")
+    book_finalize.add_argument("map_run_id")
+    book_show = book_map_actions.add_parser("show")
+    book_show.add_argument("project")
+    book_show.add_argument("map_run_id")
+    book_quality = book_map_actions.add_parser("quality-record")
+    book_quality.add_argument("project")
+    book_quality.add_argument("map_run_id")
+    book_quality.add_argument("--assessment", required=True)
+    book_quality.add_argument("--actor", default="reviewer")
 
     bundle_group = groups.add_parser("bundle")
     bundle_actions = bundle_group.add_subparsers(dest="action", required=True)
@@ -219,6 +270,44 @@ def run(args: argparse.Namespace) -> int:
                 payload = inventory_book(project, args.revision, include_text=args.include_text)
             elif args.group == "book-map" and args.action == "validate":
                 payload = validate_book_map(project, args.revision, read_book_map(args.map_file))
+            elif args.group == "book-map" and args.action == "start":
+                payload = start_book_map(
+                    project, args.revision, args.map_run_id, actor=args.actor
+                )
+            elif args.group == "book-map" and args.action == "status":
+                payload = book_map_status(project, args.map_run_id)
+            elif args.group == "book-map" and args.action == "advance":
+                payload = advance_book_map(project, args.map_run_id, actor=args.actor)
+            elif args.group == "book-map" and args.action == "claim":
+                payload = claim_book_map_unit(
+                    project,
+                    args.map_run_id,
+                    args.pass_name,
+                    worker_id=args.worker,
+                    actor=args.actor,
+                    include_text=args.include_text,
+                )
+            elif args.group == "book-map" and args.action == "complete":
+                payload = complete_book_map_unit(
+                    project,
+                    args.map_run_id,
+                    args.pass_name,
+                    args.unit_id,
+                    attempt_uid=args.attempt,
+                    result=args.result,
+                    actor=args.actor,
+                )
+            elif args.group == "book-map" and args.action == "finalize":
+                payload = finalize_book_map(project, args.map_run_id)
+            elif args.group == "book-map" and args.action == "show":
+                payload = load_book_map(project, args.map_run_id)
+            elif args.group == "book-map" and args.action == "quality-record":
+                payload = record_quality_assessment(
+                    project,
+                    args.map_run_id,
+                    read_book_map(args.assessment, max_bytes=MAX_QUALITY_BYTES),
+                    actor=args.actor,
+                )
             elif args.group == "run" and args.action == "create":
                 payload = project.create_run(
                     args.run_id,

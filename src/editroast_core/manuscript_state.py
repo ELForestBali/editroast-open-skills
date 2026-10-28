@@ -24,7 +24,7 @@ from .revision_diff import confidence_label, plan_chapter_diff, plan_paragraph_d
 from .safe_apply import renderability_errors, render_staged_revision
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SUPPORTED_SUFFIXES = {".docx", ".txt", ".md", ".markdown"}
 MAX_ARCHIVE_MEMBERS = 5_000
 MAX_ARCHIVE_UNCOMPRESSED = 256 * 1024 * 1024
@@ -649,6 +649,52 @@ CREATE INDEX IF NOT EXISTS idx_run_units_status ON run_units(run_id,status,sourc
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id,sequence);
 """
 
+MIGRATION_6 = """
+CREATE TABLE IF NOT EXISTS book_maps(
+    map_run_id TEXT PRIMARY KEY,
+    revision_uid TEXT NOT NULL REFERENCES manuscript_revisions(revision_uid),
+    schema_version INTEGER NOT NULL,
+    source_sha256 TEXT NOT NULL,
+    pass_a_run_id TEXT NOT NULL REFERENCES runs(run_id),
+    pass_b_run_id TEXT NOT NULL REFERENCES runs(run_id),
+    status TEXT NOT NULL CHECK(status IN ('validated')),
+    coverage_json TEXT NOT NULL,
+    quality_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS book_map_records(
+    map_run_id TEXT NOT NULL REFERENCES book_maps(map_run_id),
+    record_id TEXT NOT NULL,
+    source_pass TEXT NOT NULL CHECK(source_pass IN ('A','B')),
+    source_unit_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    record_class TEXT NOT NULL CHECK(record_class IN ('observed_fact','editorial_hypothesis','author_decision')),
+    epistemic_status TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    narrative_frame TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY(map_run_id,record_id)
+);
+CREATE TABLE IF NOT EXISTS book_map_evidence(
+    map_run_id TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    evidence_order INTEGER NOT NULL,
+    revision_uid TEXT NOT NULL REFERENCES manuscript_revisions(revision_uid),
+    paragraph_stable_id TEXT NOT NULL,
+    exact_quote TEXT NOT NULL,
+    start_offset INTEGER,
+    end_offset INTEGER,
+    PRIMARY KEY(map_run_id,record_id,evidence_order),
+    FOREIGN KEY(map_run_id,record_id)
+        REFERENCES book_map_records(map_run_id,record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_book_maps_revision ON book_maps(revision_uid,created_at);
+CREATE INDEX IF NOT EXISTS idx_book_map_records_kind ON book_map_records(map_run_id,kind);
+CREATE INDEX IF NOT EXISTS idx_book_map_evidence_paragraph
+    ON book_map_evidence(revision_uid,paragraph_stable_id);
+"""
+
 
 def _table_columns(connection: sqlite3.Connection, name: str) -> set[str]:
     return {row[1] for row in connection.execute(f'PRAGMA table_info("{name}")')}
@@ -716,12 +762,27 @@ def _apply_migrations(connection: sqlite3.Connection, root: Path) -> None:
     ).fetchone()
     if migrated_runs:
         connection.executescript(MIGRATION_5)
+    else:
+        connection.executescript("BEGIN;\n" + MIGRATION_5)
+        try:
+            connection.execute(
+                "INSERT INTO schema_migrations(version,name,applied_at) VALUES(5,?,?)",
+                ("resumable run checkpoints and coverage", utc_now()),
+            )
+        except Exception:
+            connection.rollback()
+            raise
+    migrated_book_maps = connection.execute(
+        "SELECT 1 FROM schema_migrations WHERE version=6"
+    ).fetchone()
+    if migrated_book_maps:
+        connection.executescript(MIGRATION_6)
         return
-    connection.executescript("BEGIN;\n" + MIGRATION_5)
+    connection.executescript("BEGIN;\n" + MIGRATION_6)
     try:
         connection.execute(
-            "INSERT INTO schema_migrations(version,name,applied_at) VALUES(5,?,?)",
-            ("resumable run checkpoints and coverage", utc_now()),
+            "INSERT INTO schema_migrations(version,name,applied_at) VALUES(6,?,?)",
+            ("whole-book map canonical records", utc_now()),
         )
     except Exception:
         connection.rollback()
@@ -3016,6 +3077,9 @@ class ManuscriptProject:
                 """SELECT COUNT(*) FROM runs r
                    WHERE NOT EXISTS(SELECT 1 FROM run_units u WHERE u.run_id=r.run_id)"""
             ).fetchone()[0],
+            "book_map_count": self.connection.execute(
+                "SELECT COUNT(*) FROM book_maps"
+            ).fetchone()[0],
         }
 
     def verify(self) -> dict:
@@ -3140,6 +3204,105 @@ class ManuscriptProject:
                 ).fetchone()
                 if not application_source or application_source[0] != application["source_sha256"]:
                     issues.append("application source SHA-256 mismatch")
+            for book_map in self.connection.execute(
+                "SELECT * FROM book_maps WHERE revision_uid=?", (revision["revision_uid"],)
+            ):
+                if book_map["source_sha256"] != revision["source_sha256"]:
+                    issues.append(f"book map source SHA-256 mismatch: {book_map['map_run_id']}")
+                for json_column in ("coverage_json", "quality_json"):
+                    try:
+                        value = json.loads(book_map[json_column])
+                    except (TypeError, json.JSONDecodeError):
+                        value = None
+                    if not isinstance(value, dict):
+                        issues.append(
+                            f"book map invalid {json_column}: {book_map['map_run_id']}"
+                        )
+                for pass_run_id in (book_map["pass_a_run_id"], book_map["pass_b_run_id"]):
+                    try:
+                        pass_status = self.run_status(pass_run_id)
+                    except ValueError:
+                        pass_status = None
+                    if pass_status is None or not pass_status["coverage_complete"]:
+                        issues.append(
+                            f"book map pass coverage incomplete: {book_map['map_run_id']}:{pass_run_id}"
+                        )
+                for stored_record in self.connection.execute(
+                    "SELECT * FROM book_map_records WHERE map_run_id=? ORDER BY record_id",
+                    (book_map["map_run_id"],),
+                ):
+                    try:
+                        record_value = json.loads(stored_record["record_json"])
+                    except (TypeError, json.JSONDecodeError):
+                        record_value = None
+                    expected_fields = {
+                        "id": stored_record["record_id"],
+                        "kind": stored_record["kind"],
+                        "record_class": stored_record["record_class"],
+                        "epistemic_status": stored_record["epistemic_status"],
+                        "scope": stored_record["scope"],
+                        "narrative_frame": stored_record["narrative_frame"],
+                        "statement": stored_record["statement"],
+                    }
+                    if not isinstance(record_value, dict) or any(
+                        record_value.get(key) != value for key, value in expected_fields.items()
+                    ):
+                        issues.append(
+                            f"book map record payload mismatch: {book_map['map_run_id']}:{stored_record['record_id']}"
+                        )
+                        continue
+                    stored_evidence = [
+                        {
+                            "revision_uid": row["revision_uid"],
+                            "paragraph_stable_id": row["paragraph_stable_id"],
+                            "exact_quote": row["exact_quote"],
+                            **(
+                                {"start_offset": row["start_offset"], "end_offset": row["end_offset"]}
+                                if row["start_offset"] is not None or row["end_offset"] is not None
+                                else {}
+                            ),
+                        }
+                        for row in self.connection.execute(
+                            """SELECT * FROM book_map_evidence
+                               WHERE map_run_id=? AND record_id=?
+                               ORDER BY evidence_order""",
+                            (book_map["map_run_id"], stored_record["record_id"]),
+                        )
+                    ]
+                    if record_value.get("evidence") != stored_evidence:
+                        issues.append(
+                            f"book map record/evidence mismatch: {book_map['map_run_id']}:{stored_record['record_id']}"
+                        )
+                evidence_rows = self.connection.execute(
+                    """SELECT e.*,p.text
+                       FROM book_map_evidence e
+                       LEFT JOIN paragraphs p
+                         ON p.revision_uid=e.revision_uid
+                        AND p.stable_id=e.paragraph_stable_id
+                       WHERE e.map_run_id=?
+                       ORDER BY e.record_id,e.evidence_order""",
+                    (book_map["map_run_id"],),
+                )
+                for evidence in evidence_rows:
+                    if evidence["revision_uid"] != revision["revision_uid"] or evidence["text"] is None:
+                        issues.append(
+                            f"book map evidence target missing: {book_map['map_run_id']}:{evidence['record_id']}"
+                        )
+                        continue
+                    start, end = evidence["start_offset"], evidence["end_offset"]
+                    quote = evidence["exact_quote"]
+                    if (start is None) != (end is None):
+                        issues.append(
+                            f"book map evidence offsets incomplete: {book_map['map_run_id']}:{evidence['record_id']}"
+                        )
+                    elif start is not None and evidence["text"][start:end] != quote:
+                        issues.append(
+                            f"book map evidence exact span mismatch: {book_map['map_run_id']}:{evidence['record_id']}"
+                        )
+                    elif start is None and quote not in evidence["text"]:
+                        issues.append(
+                            f"book map evidence quote mismatch: {book_map['map_run_id']}:{evidence['record_id']}"
+                        )
             results.append({"revision_uid": revision["revision_uid"], "ok": not issues, "issues": issues})
         runs = [
             self.verify_run(row[0])
