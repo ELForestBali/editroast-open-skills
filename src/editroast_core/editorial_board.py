@@ -1,7 +1,8 @@
 """ER-021: validate three editorial lenses and prepare an evidence-led board preview.
 
 No model inference, manuscript edits, automatic approval, or network access.
-This first slice is intentionally stateless; ER-014 orchestration is a later step.
+This module owns validated lens inputs and ER-014 orchestration; audited S4
+decisions and safe-apply/re-check coordination live in editorial_workflow.
 """
 from __future__ import annotations
 

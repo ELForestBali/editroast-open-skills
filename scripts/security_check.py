@@ -27,6 +27,7 @@ ALLOWED_IMPORTS = {
     "book_map",
     "collections",
     "editorial_board",
+    "editorial_workflow",
     "editroast_core",
     "hashlib",
     "io",

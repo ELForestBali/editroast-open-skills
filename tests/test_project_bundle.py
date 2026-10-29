@@ -216,6 +216,26 @@ class ProjectBundleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "newer than supported"):
                 inspect_project_bundle(future)
 
+            legacy_manifest_bundle = root / "schema6-manifest.editroast"
+            with zipfile.ZipFile(bundle) as source:
+                manifest = json.loads(source.read("manifest.json"))
+                manifest["schema_version"] = 6
+                manifest.pop("editorial_review_ids")
+                manifest.pop("editorial_recheck_ids")
+                with zipfile.ZipFile(legacy_manifest_bundle, "w") as target:
+                    for info in source.infolist():
+                        data = source.read(info)
+                        if info.filename == "manifest.json":
+                            data = json.dumps(manifest).encode()
+                        target.writestr(info, data)
+            inspected_legacy = inspect_project_bundle(legacy_manifest_bundle)
+            self.assertEqual(inspected_legacy["schema_version"], 6)
+            restored_legacy = root / "schema6-restored"
+            imported_legacy = import_project_bundle(legacy_manifest_bundle, restored_legacy)
+            self.assertEqual(imported_legacy["editorial_review_ids"], [])
+            with ManuscriptProject.open(restored_legacy) as restored:
+                self.assertEqual(restored.status()["schema_version"], 7)
+
             secret_bundle = root / "secret.editroast"
             secret = b"sk-abcdefghijklmnopqrstuvwxyz123456"
             project_json = secret

@@ -133,7 +133,7 @@ editorial judgment is correct. Invalid standalone maps return process exit
 status 2. See
 [ER-020 contract](docs/ER-020-BOOK-MAP-CONTRACT.md).
 
-## Editorial Board preview (ER-021 alpha)
+## Editorial Board workflow (ER-021 release candidate)
 
 After completing a finalized ER-020 whole-book map, independently prepared
 Leo Shelf, Vera Sharp and Boris Marker source-anchored editorial observations
@@ -143,12 +143,31 @@ can be checked and grouped:
 python scripts/editroast.py editorial board-preview ./my-book map-run-01 --reviews ./three-lens-reviews.json
 ```
 
-This **checks quotations against the immutable manuscript**, keeps
-contradictory perspectives open, groups only explicitly matching root-cause
-IDs, and returns a pending correction list. Chief Sterling is the chair, not a
-fourth editor. It does **not** run three AI agents, produce a final board
-judgment, apply edits, or record author approval yet. See
-[ER-021 contract](docs/ER-021-EDITORIAL-BOARD.md).
+The three lens passes use the existing ER-014 checkpoints. Core checks exact
+quotations, preserves disagreement, and groups only explicit root-cause IDs.
+An authorized editorial agent then supplies Chief Sterling's board decision;
+Core validates and persists it with append-only audit history:
+
+```bash
+python scripts/editroast.py editorial record ./my-book map-run-01 board-01 --decisions ./chair-decision.json
+python scripts/editroast.py editorial decide ./my-book board-01 opening approved --changes ./exact-changes.json --confirm-author-approval
+python scripts/editroast.py editorial apply-preview ./my-book board-01
+python scripts/editroast.py editorial apply ./my-book board-01 --plan-hash <hash> --confirm-author-approval
+```
+
+Rejected or deferred board groups create no ER-013 corrections. Approved exact
+spans still pass ER-013's source, overlap, reconciliation, renderer, preview-hash
+and explicit apply gates. Dependencies and conflicts are checked first;
+rollback remains previewed and append-only.
+
+After a revised immutable revision exists, `editorial recheck-start` creates
+one resumable chapter run. `recheck-finalize` emits one comparative report with
+improved, unresolved and new issues plus a verdict; it does not rerun three
+detailed editor reports. `editorial report --format markdown` and the default
+JSON output follow: verdict → three editors → board decision → unified
+correction list → prioritized revision plan. Chief Sterling is the chair, not
+a fourth editor. Deterministic validation proves data/evidence integrity, not
+literary quality. See [ER-021 contract](docs/ER-021-EDITORIAL-BOARD.md).
 
 ## Move or recover a durable project
 

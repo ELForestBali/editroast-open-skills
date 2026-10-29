@@ -1,6 +1,7 @@
-# ER-021 alpha: source-grounded three-lens editorial board preview
+# ER-021 release candidate: audited source-grounded Editorial Board
 
-Status: **first executable validation/assembly slice, not the completed editorial workflow**.
+Status: **executable S1-S4 workflow; deterministic integrity acceptance complete,
+independent literary-quality scoring remains a separate release gate**.
 Issue: [ER-021](https://github.com/ELForestBali/editroast-open-skills/issues/20).
 
 The board preview accepts one JSON file with **exactly three** virtual editorial
@@ -184,18 +185,109 @@ does not call the ER-013 safe-apply path. The result is a validated decision
 prepared by an agent, *not* an independently measured high-quality editorial
 judgment, author approval, or an EPUB/PDF report.
 
-The next stage must persist a source-bound board decision with audit history,
-allow author consent and ER-013 safe-apply only through explicit separate
-gates, and implement the comparative Board Re-check across reconciled
-manuscript revisions.
+### Audited author decisions and ER-013 safe apply (ER-021 S4)
 
-### Work remaining before ER-021 is complete
+Persist the validated decision once. Reusing the review ID with different
+content is refused; an identical retry is idempotent:
 
-1. Detailed lens-specific instructions and independent human editorial-quality acceptance for the existing ER-014-backed chapter runs.
-2. Auditable persistence of explicit board adjudication and deeper agent-led
-   semantic review, with inspectable evidence and disagreements.
-3. Single actionable correction list integrated with author approvals,
-   dependency/conflict resolution and ER-013's preview/apply gates.
-4. One comparative Board Re-check on a revised manuscript, using verified
-   reconciliation, not three new full reviews by default.
-5. EN/RU private-beta quality gates distinct from source/CI integrity tests.
+```bash
+python scripts/editroast.py editorial record ./my-book map-run-01 board-01 \
+  --decisions ./chair-decision.json
+python scripts/editroast.py editorial board-status ./my-book board-01
+```
+
+Every board group receives a canonical `author_decisions` row and append-only
+board/decision events. The author may approve, reject, or defer a group.
+Rejected and deferred groups create no correction rows. A first approval of a
+`revise` or `needs_author_decision` group requires an exact change file:
+
+```json
+{
+  "schema_version": 1,
+  "review_id": "board-01",
+  "revision_uid": "r000001",
+  "canonical_id": "opening",
+  "changes": [
+    {
+      "correction_id": "board-opening-01",
+      "paragraph_stable_id": "<stable paragraph ID>",
+      "exact_before": "bronze",
+      "replacement": "brass",
+      "start_offset": 18,
+      "end_offset": 24,
+      "change_class": "mechanical",
+      "rationale": "Exact author-reviewed change."
+    }
+  ]
+}
+```
+
+```bash
+python scripts/editroast.py editorial decide ./my-book board-01 causality approved \
+  --confirm-author-approval
+python scripts/editroast.py editorial decide ./my-book board-01 opening approved \
+  --changes ./opening-changes.json --confirm-author-approval
+python scripts/editroast.py editorial apply-preview ./my-book board-01
+python scripts/editroast.py editorial apply ./my-book board-01 \
+  --plan-hash <preview-plan-hash> --confirm-author-approval
+```
+
+An approval is blocked while a dependency is unapproved or a conflicting
+group is approved. Semantic corrections require
+`--confirm-semantic-group`. Only approved exact corrections are added to the
+existing ER-013 tables. The board apply command delegates to the same ER-013
+preview and immutable-revision renderer; it does not introduce another apply
+engine. `editorial rollback-preview` and `editorial rollback` delegate to the
+existing append-only rollback path.
+
+### One comparative Board Re-check
+
+The revised revision must descend from the reviewed revision and have no
+unresolved target-revision reconciliation groups. One ER-014 chapter run is
+created for the board as a whole:
+
+```bash
+python scripts/editroast.py editorial recheck-start ./my-book board-01 recheck-01 r000002
+python scripts/editroast.py editorial recheck-claim ./my-book recheck-01 \
+  --worker chief --include-text
+python scripts/editroast.py editorial recheck-complete ./my-book recheck-01 <chapter-id> \
+  --attempt <attempt-id> --result ./my-book/work/recheck/chapter.json
+python scripts/editroast.py editorial recheck-finalize ./my-book recheck-01 \
+  --verdict ./recheck-verdict.json
+```
+
+Per-chapter assessments are `improved`, `unresolved`, or `new`. Improved and
+unresolved items must link prior canonical board groups; new items must remain
+distinct. Every item requires exact evidence from the revised immutable
+source. Usage-limit pause/resume and result SHA verification come from ER-014.
+Finalization produces **one** report and explicitly records
+`independent_lens_reruns=false`.
+
+Author-facing structured JSON and Markdown are reproducible from SQLite:
+
+```bash
+python scripts/editroast.py editorial report ./my-book board-01
+python scripts/editroast.py editorial report ./my-book board-01 --format markdown
+```
+
+The order is verdict → Leo Shelf, Vera Sharp, Boris Marker → Chief Sterling's
+board decision → unified correction list → prioritized revision plan. A
+finalized comparative re-check is appended to the same report. Schema-v7 board
+state, author decisions, ER-013 links, re-check checkpoints and reports survive
+`.editroast` export/import. Schema-v6 archives remain importable and migrate
+forward without fabricated board records.
+
+### Acceptance boundary and remaining quality work
+
+Implemented automated acceptance covers EN/RU Unicode source handling,
+dream/flashback/unreliable-narrator/ambiguity/delayed-payoff map context, clean
+chapters, three independent resumable lenses, exact citations, complete board
+coverage, persistence, author gates, dependency/conflict handling, ER-013
+apply/rollback, one resumable re-check, Markdown/JSON reporting, project
+integrity and portable bundles.
+
+Core does not generate or certify literary judgments. Before calling this a
+stable editorial-quality release, run consented private EN/RU expert scoring
+for false positives, missed issues, voice preservation and recommendation
+utility. Those scorecards must remain separate from source/CI integrity and
+must not publish real manuscripts or private reports.

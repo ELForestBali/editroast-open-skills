@@ -24,7 +24,7 @@ from .revision_diff import confidence_label, plan_chapter_diff, plan_paragraph_d
 from .safe_apply import renderability_errors, render_staged_revision
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 SUPPORTED_SUFFIXES = {".docx", ".txt", ".md", ".markdown"}
 MAX_ARCHIVE_MEMBERS = 5_000
 MAX_ARCHIVE_UNCOMPRESSED = 256 * 1024 * 1024
@@ -695,6 +695,63 @@ CREATE INDEX IF NOT EXISTS idx_book_map_evidence_paragraph
     ON book_map_evidence(revision_uid,paragraph_stable_id);
 """
 
+MIGRATION_7 = """
+CREATE TABLE IF NOT EXISTS editorial_board_reviews(
+    review_id TEXT PRIMARY KEY,
+    map_run_id TEXT NOT NULL REFERENCES book_maps(map_run_id),
+    revision_uid TEXT NOT NULL REFERENCES manuscript_revisions(revision_uid),
+    schema_version INTEGER NOT NULL,
+    source_sha256 TEXT NOT NULL,
+    decision_sha256 TEXT NOT NULL,
+    verdict_json TEXT NOT NULL,
+    decision_json TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS editorial_board_groups(
+    review_id TEXT NOT NULL REFERENCES editorial_board_reviews(review_id),
+    canonical_id TEXT NOT NULL,
+    group_json TEXT NOT NULL,
+    author_status TEXT NOT NULL
+        CHECK(author_status IN ('pending','approved','rejected','deferred')),
+    correction_ids_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(review_id,canonical_id)
+);
+CREATE TABLE IF NOT EXISTS editorial_board_events(
+    sequence INTEGER PRIMARY KEY,
+    event_uid TEXT NOT NULL UNIQUE,
+    review_id TEXT NOT NULL REFERENCES editorial_board_reviews(review_id),
+    canonical_id TEXT,
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS editorial_board_rechecks(
+    recheck_id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL REFERENCES editorial_board_reviews(review_id),
+    baseline_revision_uid TEXT NOT NULL REFERENCES manuscript_revisions(revision_uid),
+    revision_uid TEXT NOT NULL REFERENCES manuscript_revisions(revision_uid),
+    source_sha256 TEXT NOT NULL,
+    run_id TEXT NOT NULL UNIQUE REFERENCES runs(run_id),
+    status TEXT NOT NULL CHECK(status IN ('started','finalized')),
+    verdict_json TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    report_sha256 TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_editorial_board_reviews_revision
+    ON editorial_board_reviews(revision_uid,created_at);
+CREATE INDEX IF NOT EXISTS idx_editorial_board_events_review
+    ON editorial_board_events(review_id,sequence);
+CREATE INDEX IF NOT EXISTS idx_editorial_board_rechecks_review
+    ON editorial_board_rechecks(review_id,created_at);
+"""
+
 
 def _table_columns(connection: sqlite3.Connection, name: str) -> set[str]:
     return {row[1] for row in connection.execute(f'PRAGMA table_info("{name}")')}
@@ -777,12 +834,27 @@ def _apply_migrations(connection: sqlite3.Connection, root: Path) -> None:
     ).fetchone()
     if migrated_book_maps:
         connection.executescript(MIGRATION_6)
+    else:
+        connection.executescript("BEGIN;\n" + MIGRATION_6)
+        try:
+            connection.execute(
+                "INSERT INTO schema_migrations(version,name,applied_at) VALUES(6,?,?)",
+                ("whole-book map canonical records", utc_now()),
+            )
+        except Exception:
+            connection.rollback()
+            raise
+    migrated_board = connection.execute(
+        "SELECT 1 FROM schema_migrations WHERE version=7"
+    ).fetchone()
+    if migrated_board:
+        connection.executescript(MIGRATION_7)
         return
-    connection.executescript("BEGIN;\n" + MIGRATION_6)
+    connection.executescript("BEGIN;\n" + MIGRATION_7)
     try:
         connection.execute(
-            "INSERT INTO schema_migrations(version,name,applied_at) VALUES(6,?,?)",
-            ("whole-book map canonical records", utc_now()),
+            "INSERT INTO schema_migrations(version,name,applied_at) VALUES(7,?,?)",
+            ("audited editorial board decisions and comparative rechecks", utc_now()),
         )
     except Exception:
         connection.rollback()
@@ -3080,6 +3152,18 @@ class ManuscriptProject:
             "book_map_count": self.connection.execute(
                 "SELECT COUNT(*) FROM book_maps"
             ).fetchone()[0],
+            "editorial_board_count": self.connection.execute(
+                "SELECT COUNT(*) FROM editorial_board_reviews"
+            ).fetchone()[0],
+            "editorial_board_decision_counts": {
+                row[0]: row[1]
+                for row in self.connection.execute(
+                    "SELECT author_status,COUNT(*) FROM editorial_board_groups GROUP BY author_status"
+                )
+            },
+            "editorial_recheck_count": self.connection.execute(
+                "SELECT COUNT(*) FROM editorial_board_rechecks"
+            ).fetchone()[0],
         }
 
     def verify(self) -> dict:
@@ -3302,6 +3386,125 @@ class ManuscriptProject:
                     elif start is None and quote not in evidence["text"]:
                         issues.append(
                             f"book map evidence quote mismatch: {book_map['map_run_id']}:{evidence['record_id']}"
+                        )
+            for board in self.connection.execute(
+                "SELECT * FROM editorial_board_reviews WHERE revision_uid=?",
+                (revision["revision_uid"],),
+            ):
+                label = board["review_id"]
+                if board["source_sha256"] != revision["source_sha256"]:
+                    issues.append(f"editorial board source SHA-256 mismatch: {label}")
+                try:
+                    decision = json.loads(board["decision_json"])
+                    verdict = json.loads(board["verdict_json"])
+                except (TypeError, json.JSONDecodeError):
+                    decision, verdict = None, None
+                if not isinstance(decision, dict) or not isinstance(verdict, dict):
+                    issues.append(f"editorial board stored JSON invalid: {label}")
+                    continue
+                actual_sha = sha256_bytes(
+                    json.dumps(
+                        decision, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")
+                )
+                if actual_sha != board["decision_sha256"]:
+                    issues.append(f"editorial board decision SHA-256 mismatch: {label}")
+                expected_group_values = {
+                    item.get("canonical_id"): item
+                    for item in decision.get("editorial_board", {}).get("groups", [])
+                    if isinstance(item, dict)
+                }
+                expected_groups = set(expected_group_values)
+                stored_groups = {
+                    row["canonical_id"]
+                    for row in self.connection.execute(
+                        "SELECT canonical_id FROM editorial_board_groups WHERE review_id=?",
+                        (label,),
+                    )
+                }
+                if expected_groups != stored_groups:
+                    issues.append(f"editorial board group coverage mismatch: {label}")
+                for group in self.connection.execute(
+                    "SELECT * FROM editorial_board_groups WHERE review_id=?",
+                    (label,),
+                ):
+                    try:
+                        group_value = json.loads(group["group_json"])
+                        correction_ids = json.loads(group["correction_ids_json"])
+                    except (TypeError, json.JSONDecodeError):
+                        issues.append(
+                            f"editorial board group JSON invalid: {label}:{group['canonical_id']}"
+                        )
+                        continue
+                    if (
+                        not isinstance(group_value, dict)
+                        or group_value.get("canonical_id") != group["canonical_id"]
+                        or not isinstance(correction_ids, list)
+                    ):
+                        issues.append(
+                            f"editorial board group payload mismatch: {label}:{group['canonical_id']}"
+                        )
+                        continue
+                    if group_value != expected_group_values.get(group["canonical_id"]):
+                        issues.append(
+                            f"editorial board group changed after decision: {label}:{group['canonical_id']}"
+                        )
+                    decision_row = self.connection.execute(
+                        "SELECT status FROM author_decisions WHERE decision_id=?",
+                        (f"board:{label}:{group['canonical_id']}",),
+                    ).fetchone()
+                    if decision_row is None or decision_row[0] != group["author_status"]:
+                        issues.append(
+                            f"editorial board author decision mismatch: {label}:{group['canonical_id']}"
+                        )
+                    latest_event = self.connection.execute(
+                        """SELECT status FROM decision_events WHERE decision_id=?
+                           ORDER BY id DESC LIMIT 1""",
+                        (f"board:{label}:{group['canonical_id']}",),
+                    ).fetchone()
+                    if latest_event is None or latest_event[0] != group["author_status"]:
+                        issues.append(
+                            f"editorial board decision event mismatch: {label}:{group['canonical_id']}"
+                        )
+                    for correction_id in correction_ids:
+                        correction = self.connection.execute(
+                            "SELECT source_revision_uid,group_uid FROM corrections WHERE correction_id=?",
+                            (correction_id,),
+                        ).fetchone()
+                        if (
+                            correction is None
+                            or correction[0] != revision["revision_uid"]
+                            or correction[1] != f"board:{label}:{group['canonical_id']}"
+                        ):
+                            issues.append(
+                                f"editorial board correction mismatch: {label}:{correction_id}"
+                            )
+            for recheck in self.connection.execute(
+                "SELECT * FROM editorial_board_rechecks WHERE revision_uid=?",
+                (revision["revision_uid"],),
+            ):
+                if recheck["source_sha256"] != revision["source_sha256"]:
+                    issues.append(f"editorial re-check source SHA-256 mismatch: {recheck['recheck_id']}")
+                try:
+                    verdict = json.loads(recheck["verdict_json"])
+                    report = json.loads(recheck["report_json"])
+                except (TypeError, json.JSONDecodeError):
+                    verdict, report = None, None
+                if not isinstance(verdict, dict) or not isinstance(report, dict):
+                    issues.append(f"editorial re-check stored JSON invalid: {recheck['recheck_id']}")
+                if recheck["status"] == "finalized" and (
+                    not report or report.get("revision_uid") != revision["revision_uid"]
+                ):
+                    issues.append(f"editorial re-check report mismatch: {recheck['recheck_id']}")
+                if recheck["status"] == "finalized" and report:
+                    actual_report_sha = sha256_bytes(
+                        json.dumps(
+                            report, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8")
+                    )
+                    if actual_report_sha != recheck["report_sha256"]:
+                        issues.append(
+                            f"editorial re-check report SHA-256 mismatch: {recheck['recheck_id']}"
                         )
             results.append({"revision_uid": revision["revision_uid"], "ok": not issues, "issues": issues})
         runs = [
