@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.0-rc.1 — 2026-10-29
+
+- Completed ER-021 S1-S4: three independent ER-014 editorial lenses, explicit Chief Sterling adjudication, source-bound SQLite persistence and append-only audit history.
+- Added author approve/reject/defer gates, dependency/conflict validation, and ER-013 exact-span safe apply/rollback integration that creates corrections only after explicit approval.
+- Added one ER-014-backed comparative Board Re-check with improved/unresolved/new classifications and one verdict, plus reproducible author-facing JSON and Markdown reports.
+- Added schema-v7 `.editroast` portability, EN/RU Unicode and narrative-device regression coverage, and separate data-integrity versus editorial-quality reporting.
+
 ## 2.0.0-alpha.7 — unreleased
 
 - Added ER-020 two-pass whole-book mapping on the existing ER-014 resumable run engine, with Pass A inventory/global context and Pass B chapter synthesis.

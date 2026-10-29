@@ -14,7 +14,7 @@ Define `.editroast` as a versioned ZIP container with a JSON manifest, a SQLite 
 
 Sanitize known service JSON metadata recursively. Redact sensitive-key values and absolute user paths, then vacuum the copied database so replaced values do not remain in free pages. Audit every final payload, including nested DOCX members, for credential-like strings and private absolute paths. Refuse export rather than alter immutable manuscript bytes or silently ship a detected leak.
 
-Record format/schema versions, project identity, revision/finding/decision/application/run IDs, and size/SHA-256 for every payload. Validate archive path safety, duplicates, encryption, symlinks, member and total sizes, compression ratio, exact manifest membership, hashes, supported versions, and sanitization constraints before extraction.
+Record format/schema versions, project identity, revision/finding/decision/application/run IDs, schema-v7 editorial review/re-check IDs, and size/SHA-256 for every payload. Validate archive path safety, duplicates, encryption, symlinks, member and total sizes, compression ratio, exact manifest membership, hashes, supported versions, and sanitization constraints before extraction. Continue accepting older schema-v6 manifests that predate the editorial ID fields and migrate their databases forward with empty board state.
 
 Import only into a destination that does not exist. Extract declared members to a same-volume temporary directory, open the recovered project with the canonical migration code, verify revision and completed-run integrity plus manifest identities, and atomically rename the directory into place. Never overwrite an existing project.
 

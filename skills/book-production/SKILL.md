@@ -4,11 +4,11 @@ description: "Plan and audit destination-specific book production for print PDF,
 license: MIT
 metadata:
   author: EditRoast
-  version: "2.0.0-alpha.1"
+  version: "2.0.0-rc.1"
   status: "beta"
 ---
 
-> **Implementation boundary:** This skill combines instructions to the user's AI agent with bundled, executable offline Python tools. Local code handles file preparation, source chunk IDs, saved progress, evidence validation, and/or the preliminary decision ledger; the AI agent supplies editorial judgment. Do not claim that the code itself runs a language model. See [technical architecture](https://github.com/ELForestBali/editroast-open-skills/blob/main/docs/UNDER-THE-HOOD.md) and [current feature status](https://editroast.com/skills/under-the-hood/). The planned full-book rewrite, complete literary translation, branded PDFs, and production-ready KDP/EPUB exports are **not** part of this alpha implementation.
+> **Implementation boundary:** This BETA skill combines production-planning instructions with bundled offline state and validation utilities. Do not claim that the code itself runs a language model. See [technical architecture](https://github.com/ELForestBali/editroast-open-skills/blob/main/docs/UNDER-THE-HOOD.md) and [current feature status](https://editroast.com/skills/under-the-hood/). DOCX/EPUB/print-PDF generation and platform-ready certification are **not** shipped by this release candidate.
 
 # Book Production — BETA
 

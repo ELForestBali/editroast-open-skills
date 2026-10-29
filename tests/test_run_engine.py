@@ -213,7 +213,7 @@ class ResumableRunTests(unittest.TestCase):
             finally:
                 connection.close()
             with ManuscriptProject.open(project_path) as migrated:
-                self.assertEqual(migrated.status()["schema_version"], 6)
+                self.assertEqual(migrated.status()["schema_version"], 7)
                 self.assertEqual(migrated.status()["run_counts"], {})
                 self.assertTrue(migrated.verify()["ok"])
 

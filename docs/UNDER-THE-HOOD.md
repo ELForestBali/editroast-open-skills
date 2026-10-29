@@ -1,6 +1,6 @@
 # Under the hood: why EditRoast is more than a prompt pack
 
-> **Implementation snapshot:** EditRoast Open Skills `2.0.0-alpha.7` development branch (28 October 2026). This page describes implemented, inspectable functionality; future features are explicitly labelled as such. Release/PR notes record the final commit SHA.
+> **Implementation snapshot:** EditRoast Open Skills `2.0.0-rc.1` development branch (29 October 2026). This page describes implemented, inspectable functionality; future features are explicitly labelled as such. Release/PR notes record the final commit SHA.
 
 EditRoast does use instructions and an AI model for judgments about literary quality. That is intentional. The distinction from a plain prompt template is the **code that prepares a whole manuscript, retains persistent state, verifies evidence, packages each skill independently, and makes the workflow auditable**. This does not mean the software can prove that an editorial opinion is correct.
 
@@ -22,7 +22,7 @@ Installed SKILL.md                 ← explains workflow to the selected AI agen
          │
          ├── Agent reads whole-book map and reviews individual chunks
          │     ├── ER-020 Pass A / Pass B use ER-014 run checkpoints
-         │     └── canonical schema-v6 map + verified unit results
+         │     └── canonical schema-v7 map/board state + verified unit results
          │
          ├── Local evidence and coverage validation
          │     └── verified chapter/chunk references, source-matching quotes
@@ -50,6 +50,14 @@ full Pass-A review coverage and source hashes before writing the canonical map
 to SQLite. Integrity validation and editorial-quality scorecards remain
 separate.
 
+**Editorial Board:** ER-021 uses three independent chapter-scoped ER-014 runs,
+then validates an explicit Chief Sterling adjudication without treating the
+chair as a fourth editor. Schema v7 stores the decision, dissent, author events
+and ER-013 correction links. Exact corrections are created only after explicit
+author approval and use the existing safe-apply/rollback engine. A revised
+book receives one ER-014-backed comparative Board Re-check (improved,
+unresolved, new), not three full repeat reports.
+
 **Preliminary decision ledger:** A small SQLite CLI snapshots imported versions with SHA-256, records findings/statuses, collects candidate translation decisions, exports CSV, and blocks progression while there are pending translation decisions. This is compatibility scaffolding from a preview. It is **not yet** the future revision engine: it does not automatically apply approved changes, track paragraphs across rewritten versions, or translate books.
 
 **Distribution:** The Python release builder composes independently installable archives from a single source tree, sorts inputs, normalizes ZIP metadata, and writes SHA-256 checksums. The installer targets isolated Codex and Claude Code project folders. Directly copying raw `skills/<name>/` source folders is insufficient because those folders do not yet contain the vendored runtime.
@@ -58,7 +66,7 @@ separate.
 
 | Skill | Implemented in this snapshot | Not implemented yet |
 |---|---|---|
-| `manuscript-roast` | Multi-pass full-book review instructions; ER-020 two-pass canonical book map; stable chunks; resumable state; evidence and coverage checks; Markdown outputs; reviewed virtual editor names | ER-021 multi-persona orchestration and one comparative re-review report; polished branded PDF with QR |
+| `manuscript-roast` | Multi-pass full-book review instructions; ER-020 map; three ER-014-backed editorial lenses; persisted Chief Sterling adjudication; author-gated ER-013 apply/rollback; one comparative re-check; Markdown/JSON outputs | Independent private-beta literary-quality scoring; polished branded PDF with QR |
 | `manuscript-proofreading` | Full-book proofreading instructions, style/consistency tracking, line-grounded findings and reporting via the local workflow | Apply-to-DOCX with verified tracked changes, permanent cross-revision finding matching |
 | `literary-translation` **BETA** | Rules for author approval, ambiguous-term inventory and glossary/decision ledger | End-to-end book translation, author-interview PDF, ongoing alignment/invalidation, literary QA |
 | `book-production` **BETA** | Destination/intake and safety guidance, KDP-specific lessons in reference materials | Generating print-ready PDF, EPUB, DOCX, KDP preflight/acceptance, cover construction |
@@ -96,7 +104,7 @@ There is no hosted EditRoast model and no mandatory EditRoast account. The skill
 
 ## 6. What remains on the roadmap
 
-The [project issues](https://github.com/ELForestBali/editroast-open-skills/issues) and [CHANGELOG](../CHANGELOG.md) track planned work. The staged roadmap includes safe author-approved text revisions and version comparisons; professionally designed branded editorial PDFs and QR links; genuinely end-to-end literary translation with author-approved cultural decisions; publishing profiles and output validation for KDP/EPUB/DOCX; and a tested BYOK provider interface. **Do not claim those capabilities as shipped until corresponding acceptance tests pass.**
+The [project issues](https://github.com/ELForestBali/editroast-open-skills/issues) and [CHANGELOG](../CHANGELOG.md) track planned work. The staged roadmap includes professionally designed branded editorial PDFs and QR links; genuinely end-to-end literary translation with author-approved cultural decisions; publishing profiles and output validation for KDP/EPUB/DOCX; and a tested BYOK provider interface. **Do not claim those capabilities as shipped until corresponding acceptance tests pass.**
 
 ## 7. How to examine the product critically
 

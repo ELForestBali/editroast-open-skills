@@ -7,6 +7,28 @@ import json
 import sqlite3
 
 from .manuscript_state import ManuscriptProject
+from .board_synthesis import adjudicate_editorial_board
+from .editorial_board import (
+    preview_editorial_board, start_editorial_lenses, editorial_lenses_status,
+    claim_editorial_lens_unit, complete_editorial_lens_unit,
+    preview_completed_editorial_lenses,
+)
+from .editorial_workflow import (
+    apply_board_corrections,
+    author_board_report,
+    board_recheck_status,
+    board_status,
+    claim_board_recheck_unit,
+    complete_board_recheck_unit,
+    decide_board_group,
+    finalize_board_recheck,
+    preview_board_apply,
+    preview_board_rollback,
+    record_board_decision,
+    render_author_board_markdown,
+    rollback_board_application,
+    start_board_recheck,
+)
 from .book_map import (
     MAX_QUALITY_BYTES,
     advance_book_map,
@@ -238,6 +260,117 @@ def build_parser() -> argparse.ArgumentParser:
     book_quality.add_argument("--assessment", required=True)
     book_quality.add_argument("--actor", default="reviewer")
 
+    editorial_group = groups.add_parser("editorial")
+    editorial_actions = editorial_group.add_subparsers(dest="action", required=True)
+    editorial_preview = editorial_actions.add_parser("board-preview")
+    editorial_preview.add_argument("project")
+    editorial_preview.add_argument("map_run_id")
+    editorial_preview.add_argument("--reviews", required=True)
+    editorial_start = editorial_actions.add_parser("start")
+    editorial_start.add_argument("project")
+    editorial_start.add_argument("map_run_id")
+    editorial_start.add_argument("review_id")
+    editorial_status = editorial_actions.add_parser("status")
+    editorial_status.add_argument("project")
+    editorial_status.add_argument("map_run_id")
+    editorial_status.add_argument("review_id")
+    editorial_claim = editorial_actions.add_parser("claim")
+    editorial_claim.add_argument("project")
+    editorial_claim.add_argument("map_run_id")
+    editorial_claim.add_argument("review_id")
+    editorial_claim.add_argument("--persona", required=True)
+    editorial_claim.add_argument("--worker", required=True)
+    editorial_claim.add_argument("--include-text", action="store_true")
+    editorial_complete = editorial_actions.add_parser("complete")
+    editorial_complete.add_argument("project")
+    editorial_complete.add_argument("map_run_id")
+    editorial_complete.add_argument("review_id")
+    editorial_complete.add_argument("unit_id")
+    editorial_complete.add_argument("--persona", required=True)
+    editorial_complete.add_argument("--attempt", required=True)
+    editorial_complete.add_argument("--result", required=True)
+    editorial_result = editorial_actions.add_parser("preview")
+    editorial_result.add_argument("project")
+    editorial_result.add_argument("map_run_id")
+    editorial_result.add_argument("review_id")
+    editorial_adjudicate = editorial_actions.add_parser("adjudicate")
+    editorial_adjudicate.add_argument("project")
+    editorial_adjudicate.add_argument("map_run_id")
+    editorial_adjudicate.add_argument("review_id")
+    editorial_adjudicate.add_argument("--decisions", required=True)
+    editorial_record = editorial_actions.add_parser("record")
+    editorial_record.add_argument("project")
+    editorial_record.add_argument("map_run_id")
+    editorial_record.add_argument("review_id")
+    editorial_record.add_argument("--decisions", required=True)
+    editorial_record.add_argument("--actor", default="editorial_board_agent")
+    editorial_board_status = editorial_actions.add_parser("board-status")
+    editorial_board_status.add_argument("project")
+    editorial_board_status.add_argument("review_id")
+    editorial_decide = editorial_actions.add_parser("decide")
+    editorial_decide.add_argument("project")
+    editorial_decide.add_argument("review_id")
+    editorial_decide.add_argument("canonical_id")
+    editorial_decide.add_argument("status", choices=("approved", "rejected", "deferred"))
+    editorial_decide.add_argument("--changes")
+    editorial_decide.add_argument("--actor", default="author")
+    editorial_decide.add_argument("--rationale")
+    editorial_decide.add_argument("--confirm-author-approval", action="store_true")
+    editorial_decide.add_argument("--confirm-semantic-group", action="store_true")
+    editorial_apply_preview = editorial_actions.add_parser("apply-preview")
+    editorial_apply_preview.add_argument("project")
+    editorial_apply_preview.add_argument("review_id")
+    editorial_apply_preview.add_argument("--group", action="append", dest="group_ids")
+    editorial_apply = editorial_actions.add_parser("apply")
+    editorial_apply.add_argument("project")
+    editorial_apply.add_argument("review_id")
+    editorial_apply.add_argument("--plan-hash", required=True)
+    editorial_apply.add_argument("--group", action="append", dest="group_ids")
+    editorial_apply.add_argument("--actor", default="author")
+    editorial_apply.add_argument("--confirm-author-approval", action="store_true")
+    editorial_rollback_preview = editorial_actions.add_parser("rollback-preview")
+    editorial_rollback_preview.add_argument("project")
+    editorial_rollback_preview.add_argument("review_id")
+    editorial_rollback_preview.add_argument("application_uid")
+    editorial_rollback = editorial_actions.add_parser("rollback")
+    editorial_rollback.add_argument("project")
+    editorial_rollback.add_argument("review_id")
+    editorial_rollback.add_argument("application_uid")
+    editorial_rollback.add_argument("--plan-hash", required=True)
+    editorial_rollback.add_argument("--actor", default="author")
+    editorial_rollback.add_argument("--confirm-author-approval", action="store_true")
+    editorial_recheck_start = editorial_actions.add_parser("recheck-start")
+    editorial_recheck_start.add_argument("project")
+    editorial_recheck_start.add_argument("review_id")
+    editorial_recheck_start.add_argument("recheck_id")
+    editorial_recheck_start.add_argument("revision")
+    editorial_recheck_start.add_argument("--actor", default="agent")
+    editorial_recheck_status = editorial_actions.add_parser("recheck-status")
+    editorial_recheck_status.add_argument("project")
+    editorial_recheck_status.add_argument("recheck_id")
+    editorial_recheck_claim = editorial_actions.add_parser("recheck-claim")
+    editorial_recheck_claim.add_argument("project")
+    editorial_recheck_claim.add_argument("recheck_id")
+    editorial_recheck_claim.add_argument("--worker", required=True)
+    editorial_recheck_claim.add_argument("--actor", default="agent")
+    editorial_recheck_claim.add_argument("--include-text", action="store_true")
+    editorial_recheck_complete = editorial_actions.add_parser("recheck-complete")
+    editorial_recheck_complete.add_argument("project")
+    editorial_recheck_complete.add_argument("recheck_id")
+    editorial_recheck_complete.add_argument("unit_id")
+    editorial_recheck_complete.add_argument("--attempt", required=True)
+    editorial_recheck_complete.add_argument("--result", required=True)
+    editorial_recheck_complete.add_argument("--actor", default="agent")
+    editorial_recheck_finalize = editorial_actions.add_parser("recheck-finalize")
+    editorial_recheck_finalize.add_argument("project")
+    editorial_recheck_finalize.add_argument("recheck_id")
+    editorial_recheck_finalize.add_argument("--verdict", required=True)
+    editorial_recheck_finalize.add_argument("--actor", default="editorial_board_agent")
+    editorial_report = editorial_actions.add_parser("report")
+    editorial_report.add_argument("project")
+    editorial_report.add_argument("review_id")
+    editorial_report.add_argument("--format", choices=("json", "markdown"), default="json")
+
     bundle_group = groups.add_parser("bundle")
     bundle_actions = bundle_group.add_subparsers(dest="action", required=True)
     bundle_export = bundle_actions.add_parser("export")
@@ -266,7 +399,93 @@ def run(args: argparse.Namespace) -> int:
             payload = project.status()
     else:
         with ManuscriptProject.open(args.project) as project:
-            if args.group == "book-map" and args.action == "inventory":
+            if args.group == "editorial" and args.action == "board-preview":
+                payload = preview_editorial_board(
+                    project, args.map_run_id, read_book_map(args.reviews)
+                )
+            elif args.group == "editorial" and args.action == "start":
+                payload = start_editorial_lenses(project, args.map_run_id, args.review_id)
+            elif args.group == "editorial" and args.action == "status":
+                payload = editorial_lenses_status(project, args.map_run_id, args.review_id)
+            elif args.group == "editorial" and args.action == "claim":
+                payload = claim_editorial_lens_unit(
+                    project, args.map_run_id, args.review_id, args.persona,
+                    worker_id=args.worker, include_text=args.include_text,
+                )
+            elif args.group == "editorial" and args.action == "complete":
+                payload = complete_editorial_lens_unit(
+                    project, args.map_run_id, args.review_id, args.persona,
+                    args.unit_id, attempt_uid=args.attempt, result=args.result,
+                )
+            elif args.group == "editorial" and args.action == "preview":
+                payload = preview_completed_editorial_lenses(
+                    project, args.map_run_id, args.review_id,
+                )
+            elif args.group == "editorial" and args.action == "adjudicate":
+                payload = adjudicate_editorial_board(
+                    project, args.map_run_id, args.review_id,
+                    read_book_map(args.decisions),
+                )
+            elif args.group == "editorial" and args.action == "record":
+                payload = record_board_decision(
+                    project, args.map_run_id, args.review_id,
+                    read_book_map(args.decisions), actor=args.actor,
+                )
+            elif args.group == "editorial" and args.action == "board-status":
+                payload = board_status(project, args.review_id)
+            elif args.group == "editorial" and args.action == "decide":
+                payload = decide_board_group(
+                    project, args.review_id, args.canonical_id, args.status,
+                    changes=read_book_map(args.changes) if args.changes else None,
+                    actor=args.actor, rationale=args.rationale,
+                    author_confirmed=args.confirm_author_approval,
+                    confirm_semantic_group=args.confirm_semantic_group,
+                )
+            elif args.group == "editorial" and args.action == "apply-preview":
+                payload = preview_board_apply(
+                    project, args.review_id, group_ids=args.group_ids,
+                )
+            elif args.group == "editorial" and args.action == "apply":
+                payload = apply_board_corrections(
+                    project, args.review_id, plan_hash=args.plan_hash,
+                    group_ids=args.group_ids, actor=args.actor,
+                    author_confirmed=args.confirm_author_approval,
+                )
+            elif args.group == "editorial" and args.action == "rollback-preview":
+                payload = preview_board_rollback(
+                    project, args.review_id, args.application_uid,
+                )
+            elif args.group == "editorial" and args.action == "rollback":
+                payload = rollback_board_application(
+                    project, args.review_id, args.application_uid,
+                    plan_hash=args.plan_hash, actor=args.actor,
+                    author_confirmed=args.confirm_author_approval,
+                )
+            elif args.group == "editorial" and args.action == "recheck-start":
+                payload = start_board_recheck(
+                    project, args.review_id, args.recheck_id, args.revision,
+                    actor=args.actor,
+                )
+            elif args.group == "editorial" and args.action == "recheck-status":
+                payload = board_recheck_status(project, args.recheck_id)
+            elif args.group == "editorial" and args.action == "recheck-claim":
+                payload = claim_board_recheck_unit(
+                    project, args.recheck_id, worker_id=args.worker,
+                    include_text=args.include_text, actor=args.actor,
+                )
+            elif args.group == "editorial" and args.action == "recheck-complete":
+                payload = complete_board_recheck_unit(
+                    project, args.recheck_id, args.unit_id,
+                    attempt_uid=args.attempt, result=args.result, actor=args.actor,
+                )
+            elif args.group == "editorial" and args.action == "recheck-finalize":
+                payload = finalize_board_recheck(
+                    project, args.recheck_id, read_book_map(args.verdict), actor=args.actor,
+                )
+            elif args.group == "editorial" and args.action == "report":
+                report = author_board_report(project, args.review_id)
+                payload = render_author_board_markdown(report) if args.format == "markdown" else report
+            elif args.group == "book-map" and args.action == "inventory":
                 payload = inventory_book(project, args.revision, include_text=args.include_text)
             elif args.group == "book-map" and args.action == "validate":
                 payload = validate_book_map(project, args.revision, read_book_map(args.map_file))
@@ -440,8 +659,11 @@ def run(args: argparse.Namespace) -> int:
                 )
             else:
                 payload = project.verify()
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
-    verification = (args.action == "verify" and args.group in {"manuscript", "run"}) or (args.group == "book-map" and args.action == "validate")
+    if isinstance(payload, str):
+        print(payload)
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    verification = (args.action == "verify" and args.group in {"manuscript", "run"}) or (args.group == "book-map" and args.action == "validate") or (args.group == "editorial" and args.action in {"board-preview", "adjudicate", "record"})
     return 2 if verification and not payload["ok"] else 0
 
 

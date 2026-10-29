@@ -66,6 +66,10 @@ JSON_COLUMNS = {
     "reconciliation_candidates": ("evidence_json",),
     "run_events": ("payload_json",),
     "book_maps": ("coverage_json", "quality_json"),
+    "editorial_board_reviews": ("verdict_json", "decision_json"),
+    "editorial_board_groups": ("group_json", "correction_ids_json"),
+    "editorial_board_events": ("payload_json",),
+    "editorial_board_rechecks": ("verdict_json", "report_json"),
 }
 
 
@@ -360,6 +364,16 @@ def export_project_bundle(project: ManuscriptProject, destination: str | Path) -
                     "SELECT run_id FROM runs ORDER BY created_at,run_id"
                 )
             ],
+            "editorial_review_ids": [
+                row[0] for row in project.connection.execute(
+                    "SELECT review_id FROM editorial_board_reviews ORDER BY created_at,review_id"
+                )
+            ],
+            "editorial_recheck_ids": [
+                row[0] for row in project.connection.execute(
+                    "SELECT recheck_id FROM editorial_board_rechecks ORDER BY created_at,recheck_id"
+                )
+            ],
             "entries": entries,
         }
         (staging / "manifest.json").write_text(
@@ -443,9 +457,12 @@ def _validated_bundle(path: str | Path) -> tuple[Path, dict]:
             )
         if not isinstance(manifest.get("project_id"), str) or not manifest["project_id"]:
             raise ValueError("Bundle project ID is missing")
-        for identifier_key in (
-            "revision_ids", "finding_ids", "decision_ids", "application_ids", "run_ids"
-        ):
+        identifier_keys = [
+            "revision_ids", "finding_ids", "decision_ids", "application_ids", "run_ids",
+        ]
+        if manifest["schema_version"] >= 7:
+            identifier_keys.extend(("editorial_review_ids", "editorial_recheck_ids"))
+        for identifier_key in identifier_keys:
             identifiers = manifest.get(identifier_key)
             if (
                 not isinstance(identifiers, list)
@@ -562,6 +579,16 @@ def import_project_bundle(path: str | Path, destination: str | Path) -> dict:
                     "SELECT run_id FROM runs ORDER BY created_at,run_id"
                 )
             ]
+            editorial_review_ids = [
+                row[0] for row in project.connection.execute(
+                    "SELECT review_id FROM editorial_board_reviews ORDER BY created_at,review_id"
+                )
+            ]
+            editorial_recheck_ids = [
+                row[0] for row in project.connection.execute(
+                    "SELECT recheck_id FROM editorial_board_rechecks ORDER BY created_at,recheck_id"
+                )
+            ]
             if revision_ids != manifest["revision_ids"]:
                 raise ValueError("Imported revision IDs do not match the bundle manifest")
             if finding_ids != manifest["finding_ids"]:
@@ -572,6 +599,10 @@ def import_project_bundle(path: str | Path, destination: str | Path) -> dict:
                 raise ValueError("Imported application IDs do not match the bundle manifest")
             if run_ids != manifest["run_ids"]:
                 raise ValueError("Imported run IDs do not match the bundle manifest")
+            if editorial_review_ids != manifest.get("editorial_review_ids", []):
+                raise ValueError("Imported editorial review IDs do not match the bundle manifest")
+            if editorial_recheck_ids != manifest.get("editorial_recheck_ids", []):
+                raise ValueError("Imported editorial re-check IDs do not match the bundle manifest")
         os.replace(staging, target)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
@@ -585,5 +616,7 @@ def import_project_bundle(path: str | Path, destination: str | Path) -> dict:
         "decision_ids": manifest["decision_ids"],
         "application_ids": manifest["application_ids"],
         "run_ids": manifest["run_ids"],
+        "editorial_review_ids": manifest.get("editorial_review_ids", []),
+        "editorial_recheck_ids": manifest.get("editorial_recheck_ids", []),
         "bundle_sha256": sha256_file(source),
     }

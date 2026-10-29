@@ -549,7 +549,7 @@ class TwoPassBookMapTests(unittest.TestCase):
             finally:
                 connection.close()
             with ManuscriptProject.open(project_path) as migrated:
-                self.assertEqual(migrated.status()["schema_version"], 6)
+                self.assertEqual(migrated.status()["schema_version"], 7)
                 self.assertEqual(migrated.status()["book_map_count"], 0)
                 self.assertTrue(migrated.verify()["ok"])
 

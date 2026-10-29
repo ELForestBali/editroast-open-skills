@@ -4,11 +4,11 @@ description: Critique a complete fiction or narrative nonfiction manuscript from
 license: MIT
 metadata:
   author: EditRoast
-  version: "2.0.0-alpha.1"
+  version: "2.0.0-rc.1"
   status: "stable-v1-workflow"
 ---
 
-> **Implementation boundary:** This skill combines instructions to the user's AI agent with bundled, executable offline Python tools. Local code handles file preparation, source chunk IDs, saved progress, evidence validation, and/or the preliminary decision ledger; the AI agent supplies editorial judgment. Do not claim that the code itself runs a language model. See [technical architecture](https://github.com/ELForestBali/editroast-open-skills/blob/main/docs/UNDER-THE-HOOD.md) and [current feature status](https://editroast.com/skills/under-the-hood/). The planned full-book rewrite, complete literary translation, branded PDFs, and production-ready KDP/EPUB exports are **not** part of this alpha implementation.
+> **Implementation boundary:** This skill combines instructions to the user's AI agent with bundled, executable offline Python tools. Local code handles file preparation, source chunk IDs, saved progress, evidence validation, whole-book maps, Editorial Board audit state, author-approved exact corrections, and comparative re-check checkpoints; the AI agent supplies editorial judgment. Do not claim that the code itself runs a language model or proves literary quality. See [technical architecture](https://github.com/ELForestBali/editroast-open-skills/blob/main/docs/UNDER-THE-HOOD.md) and [current feature status](https://editroast.com/skills/under-the-hood/). Complete literary translation, branded PDFs, and production-ready KDP/EPUB exports remain separate BETA work.
 
 # Full Manuscript Roast
 
@@ -118,6 +118,30 @@ Do not declare completion if validation fails. Fix missing coverage, stale repor
 - Avoid minimum finding counts. A clean chapter may be marked clean.
 - Prefer a few consequential, well-supported findings over a long generic checklist.
 - Analyze in the manuscript's language when the selected model can do so reliably; otherwise disclose the limitation.
+
+## Durable Editorial Board workflow
+
+When the project uses the durable `scripts/editroast.py` workflow, build the
+ER-020 two-pass map first and run Leo Shelf, Vera Sharp and Boris Marker as
+three independent ER-014 chapter runs. Chief Sterling chairs the synthesis;
+do not invent a fourth independent review. Preserve disagreement and exact
+revision/paragraph/quotation evidence.
+
+Record the explicit chair decision with `editorial record`. The author may
+approve, reject or defer each canonical group. Never infer approval. A first
+approval of a revision group requires an exact change JSON; semantic changes
+need the extra semantic-group confirmation. Use `editorial apply-preview` and
+the returned plan hash before `editorial apply`. These commands delegate to
+ER-013 and must not be bypassed. Use previewed rollback if the author reverses
+an applied batch.
+
+After changes, use `editorial recheck-start` on the reconciled descendant
+revision. This is one resumable Editorial Board comparison, not three new
+detailed reviews. Classify exact-source findings as improved, unresolved or
+new, then finalize one verdict. Deliver `editorial report --format markdown`
+and/or its structured JSON in this order: verdict → three editors → board
+decision → unified correction list → prioritized revision plan. Report source
+integrity separately from editorial quality.
 
 ## Handoff
 

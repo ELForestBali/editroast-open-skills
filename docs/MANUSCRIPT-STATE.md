@@ -22,7 +22,7 @@ Imports are copied through `.staging/`, flushed, SHA-256 checked, and atomically
 
 ## Schema and migrations
 
-`schema_migrations` records each applied migration. Schema version 1 creates the durable tables; version 2 imports compatible preview-ledger rows without deleting or renaming the old tables; version 3 adds structured diffs and append-only reconciliation; version 4 adds correction approval, apply, and rollback history; version 5 adds resumable work units and append-only run events.
+`schema_migrations` records each applied migration. Schema version 1 creates the durable tables; version 2 imports compatible preview-ledger rows without deleting or renaming the old tables; version 3 adds structured diffs and append-only reconciliation; version 4 adds correction approval, apply, and rollback history; version 5 adds resumable work units and append-only run events; version 6 adds whole-book maps; version 7 adds persisted Editorial Board decisions, group events and comparative re-checks.
 
 | Table | Responsibility |
 |---|---|
@@ -47,6 +47,10 @@ Imports are copied through `.staging/`, flushed, SHA-256 checked, and atomically
 | `book_maps` | Finalized revision-bound map identity, two pass run IDs, coverage, integrity status and separate quality assessment |
 | `book_map_records` | Canonical observed facts, editorial hypotheses and author decisions with source pass/unit provenance |
 | `book_map_evidence` | Ordered exact revision/paragraph/quote anchors and optional offsets for each map record |
+| `editorial_board_reviews` | One source-bound Chief Sterling adjudication per review, with canonical digest and verdict |
+| `editorial_board_groups` | Current author status and ER-013 correction links for each canonical board group |
+| `editorial_board_events` | Append-only record, author-decision, safe-apply, rollback and re-check audit events |
+| `editorial_board_rechecks` | One ER-014-backed comparative run and finalized improved/unresolved/new report |
 | `audit_log` | Schema, project and revision lifecycle events |
 
 When a project contains the PR-01 preview tables (`revisions`, `findings`, `decisions`), opening it creates corresponding durable revision, finding, decision and event records. The old tables remain available, so `scripts/editroast_state.py --project ...` continues to work. A migrated snapshot that has no old structured paragraph map is labelled `legacy`; its original hash and decision/finding history remain inspectable. Opening a schema-v2 project backfills its existing PR-02 change rows into the structured API. Evidence unavailable in the old schema is explicitly marked as legacy or unresolved rather than invented.
@@ -143,6 +147,24 @@ The manifest records project/schema/format versions, revision/finding/decision/a
 Import extracts only declared members into a same-volume staging directory, opens and verifies the recovered project, confirms all manifest identity lists, then atomically renames it to a new destination. Existing files or directories are never overwritten. Incomplete runs remain incomplete and resumable; only corrupt recorded completions block recovery.
 
 The archive contains the author's original manuscript bytes and editorial history. It is a private backup/transfer artifact, not anonymized data and not suitable for a public repository.
+
+## Editorial Board decisions and comparative re-check
+
+ER-021 schema-v7 state persists the validated three-lens synthesis rather than
+recomputing it from mutable output files. Each group also uses the existing
+`author_decisions`/`decision_events` ledger. Rejected or deferred groups do not
+create corrections. On explicit approval, exact source spans are inserted into
+the existing ER-013 `corrections`/`correction_events` tables and remain subject
+to its preview hash, source integrity, overlap, reconciliation and renderer
+gates. Dependency and conflict checks occur before approval or apply. Board
+rollback delegates to ER-013 and creates another immutable revision.
+
+Board Re-check creates one chapter-scoped ER-014 run for a reconciled descendant
+revision. Verified chapter results classify source-grounded comparisons as
+improved, unresolved or new. Finalization stores one comparative report and
+verdict; it does not create three new persona runs. Deterministic integrity and
+editorial quality remain separate: SQLite and citations can be verified while
+the literary assessment still requires independent review.
 
 ## Ingestion and completeness
 
